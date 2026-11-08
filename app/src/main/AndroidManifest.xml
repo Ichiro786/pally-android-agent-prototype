@@ -8,7 +8,7 @@
         android:theme="@style/AppTheme"
         android:usesCleartextTraffic="false">
         <activity
-            android:name=".MainActivity"
+            android:name=".ApprovedChatActivity"
             android:exported="true"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>

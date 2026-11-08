@@ -28,10 +28,15 @@ jobs:
           log-accepted-android-sdk-licenses: false
       - name: Install Android SDK
         run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
-      - name: Install Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.13'
+      - name: Install Gradle 8.13
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/gradle-8.13-bin.zip"
+          curl --fail --location --retry 4 --retry-all-errors --retry-delay 3 --connect-timeout 30 https://downloads.gradle.org/distributions/gradle-8.13-bin.zip --output "$archive" || \
+            curl --fail --location --retry 4 --retry-all-errors --retry-delay 3 --connect-timeout 30 https://services.gradle.org/distributions/gradle-8.13-bin.zip --output "$archive"
+          unzip -q "$archive" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/gradle-8.13/bin" >> "$GITHUB_PATH"
       - name: Fetch and verify official Pally icon
         shell: bash
         run: |

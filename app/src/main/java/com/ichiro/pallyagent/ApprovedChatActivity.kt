@@ -13,12 +13,15 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -31,6 +34,9 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.DoneAll
+import androidx.compose.material.icons.filled.EmojiEmotions
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Hub
@@ -39,7 +45,6 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.BorderStroke
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -61,6 +66,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -101,6 +107,7 @@ private data class AgentMessage(
     val fromAssistant: Boolean,
     val quoted: String? = null,
     val localOnly: Boolean = false,
+    val sample: Boolean = false,
     val time: String = SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date())
 )
 
@@ -124,6 +131,7 @@ class ApprovedChatActivity : ComponentActivity() {
     var assistant by remember { mutableStateOf("Pally") }
     var drawer by remember { mutableStateOf(false) }
     var showAttachments by remember { mutableStateOf(false) }
+    var showEmoji by remember { mutableStateOf(false) }
     var draft by remember { mutableStateOf("") }
     var replyTo by remember { mutableStateOf<String?>(null) }
     var note by remember { mutableStateOf("") }
@@ -142,9 +150,21 @@ class ApprovedChatActivity : ComponentActivity() {
     val messages = remember { mutableStateListOf<AgentMessage>() }
     val connected = client != null && clientName == assistant
 
-    BackHandler(screen != AgentScreen.CHAT || drawer || showAttachments) {
+    // Seed the first launch with the approved design's illustrative thread. These rows are local UI samples, not chat history.
+    LaunchedEffect(Unit) {
+        if (messages.isEmpty()) {
+            messages += AgentMessage(text = "i can help you think it through.\nwhat matters most right now?", fromAssistant = true, sample = true, time = "1:40 am")
+            messages += AgentMessage(text = "compare a few options for this weekend", fromAssistant = false, quoted = "you: can you help me choose?", sample = true, time = "1:41 am")
+            messages += AgentMessage(text = "sure. tell me what you want to optimize for, and i'll keep the trade-offs clear.", fromAssistant = true, sample = true, time = "1:41 am")
+            messages += AgentMessage(text = "keep it simple, and call out the biggest difference", fromAssistant = false, sample = true, time = "1:42 am")
+            messages += AgentMessage(text = "got it. i'll keep the comparison short and easy to scan.", fromAssistant = true, sample = true, time = "1:42 am")
+        }
+    }
+
+    BackHandler(screen != AgentScreen.CHAT || drawer || showAttachments || showEmoji) {
         when {
             showAttachments -> showAttachments = false
+            showEmoji -> showEmoji = false
             drawer -> drawer = false
             else -> screen = AgentScreen.CHAT
         }
@@ -197,6 +217,8 @@ class ApprovedChatActivity : ComponentActivity() {
     fun sendMessage() {
         val text = draft.trim()
         if (text.isEmpty() || busy) return
+        // Clear the illustrative first-run thread so it never appears to be the user's own conversation.
+        if (messages.any { it.sample }) messages.clear()
         val quote = replyTo
         replyTo = null
         draft = ""
@@ -238,6 +260,7 @@ class ApprovedChatActivity : ComponentActivity() {
                 onAssistant = { screen = AgentScreen.CONNECTIONS },
                 onVoice = { screen = AgentScreen.VOICE },
                 onAdd = { showAttachments = true },
+                onEmoji = { showEmoji = true },
                 onSend = { sendMessage() },
                 onReply = { message -> replyTo = if (message.fromAssistant) "$assistant: ${message.text}" else "you: ${message.text}" },
                 onDismissNote = { note = "" }
@@ -302,6 +325,10 @@ class ApprovedChatActivity : ComponentActivity() {
             onDismiss = { showAttachments = false },
             onPick = { kind -> showAttachments = false; note = "$kind selection is not sent in this preview yet." }
         )
+        if (screen == AgentScreen.CHAT && showEmoji) EmojiSheet(
+            onDismiss = { showEmoji = false },
+            onPick = { emoji -> draft += emoji; showEmoji = false }
+        )
     }
 }
 
@@ -355,6 +382,7 @@ class ApprovedChatActivity : ComponentActivity() {
     onAssistant: () -> Unit,
     onVoice: () -> Unit,
     onAdd: () -> Unit,
+    onEmoji: () -> Unit,
     onSend: () -> Unit,
     onReply: (AgentMessage) -> Unit,
     onDismissNote: () -> Unit
@@ -384,6 +412,7 @@ class ApprovedChatActivity : ComponentActivity() {
                 androidx.compose.material3.HorizontalDivider(Modifier.weight(1f), color = UiEdge.copy(alpha = .5f))
             }
             LazyColumn(state = listState, modifier = Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(start = 19.dp, end = 19.dp, top = 18.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
+                if (messages.any { it.sample }) item { Text("sample preview · not connected", Modifier.fillMaxWidth().padding(bottom = 1.dp), color = UiMuted.copy(alpha = .72f), fontSize = 10.sp, textAlign = TextAlign.Center) }
                 items(messages, key = { it.id }) { message -> MessageBubble(message, assistant, onReply) }
                 if (busy) item {
                     Row(Modifier.fillMaxWidth().padding(start = 5.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -402,14 +431,18 @@ class ApprovedChatActivity : ComponentActivity() {
         Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
             RoundControl(Icons.Default.Add, "Add attachment", onAdd, 54)
             Surface(Modifier.weight(1f).heightIn(min = 56.dp), shape = RoundedCornerShape(30.dp), color = Color(0xFF1C1B1A), border = BorderStroke(1.dp, UiEdge)) {
-                Row(Modifier.padding(start = 17.dp, end = 14.dp, top = 7.dp, bottom = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.padding(start = 17.dp, end = 6.dp, top = 7.dp, bottom = 7.dp), verticalAlignment = Alignment.CenterVertically) {
                     BasicTextField(value = draft, onValueChange = onDraft, modifier = Modifier.weight(1f), textStyle = TextStyle(color = UiWhite, fontSize = 16.sp, lineHeight = 22.sp), maxLines = 4, keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send), keyboardActions = KeyboardActions(onSend = { onSend() }), decorationBox = { inner ->
                         if (draft.isEmpty()) Text("message $assistant", color = UiMuted, fontSize = 16.sp)
                         inner()
                     })
+                    androidx.compose.material3.IconButton(onClick = onEmoji, modifier = Modifier.size(40.dp)) {
+                        Icon(Icons.Default.EmojiEmotions, contentDescription = "Choose emoji", tint = UiWhite, modifier = Modifier.size(22.dp))
+                    }
                 }
             }
-            RoundControl(Icons.AutoMirrored.Filled.Send, "Send message", { if (draft.isNotBlank()) onSend() }, 54)
+            if (draft.isBlank()) RoundControl(Icons.Default.Mic, "Open voice", onVoice, 54)
+            else RoundControl(Icons.AutoMirrored.Filled.Send, "Send message", onSend, 54)
         }
     }
 }
@@ -417,10 +450,6 @@ class ApprovedChatActivity : ComponentActivity() {
 @Composable private fun MessageBubble(message: AgentMessage, assistant: String, onReply: (AgentMessage) -> Unit) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (message.fromAssistant) Arrangement.Start else Arrangement.End) {
         Column(Modifier.widthIn(max = 340.dp).fillMaxWidth(.88f)) {
-            if (message.fromAssistant) Row(Modifier.padding(start = 5.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                AgentMark(assistant, AgentActivity.IDLE, false, {}, 24)
-                Text("  $assistant", color = UiMuted, fontSize = 12.sp)
-            }
             Surface(modifier = Modifier.pointerInput(message.id) { detectTapGestures(onLongPress = { onReply(message) }) }, color = if (message.fromAssistant) UiBubble else Color(0xFF111111), shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp, bottomStart = if (message.fromAssistant) 5.dp else 22.dp, bottomEnd = if (message.fromAssistant) 22.dp else 5.dp), border = if (message.fromAssistant) null else BorderStroke(1.dp, UiEdge)) {
                 Column(Modifier.padding(start = 15.dp, end = 14.dp, top = 13.dp, bottom = 8.dp)) {
                     message.quoted?.let { quote -> Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color(0xFF3A3938)).padding(horizontal = 10.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -431,7 +460,7 @@ class ApprovedChatActivity : ComponentActivity() {
                     Row(Modifier.align(Alignment.End).padding(top = 7.dp), verticalAlignment = Alignment.CenterVertically) {
                         if (message.localOnly) Text("local · not sent   ", color = UiMuted, fontSize = 9.sp)
                         Text(message.time, color = UiMuted, fontSize = 10.sp)
-                        if (!message.fromAssistant && !message.localOnly) Icon(Icons.Default.Check, "Sent", Modifier.padding(start = 4.dp).size(14.dp), tint = UiAccent)
+                        if (!message.fromAssistant && !message.localOnly) Icon(Icons.Default.DoneAll, "Sent", Modifier.padding(start = 4.dp).size(15.dp), tint = Color(0xFF90C7DF))
                     }
                 }
             }
@@ -616,6 +645,15 @@ class ApprovedChatActivity : ComponentActivity() {
         Spacer(Modifier.weight(1f))
         TextButton(onClick = onBack, modifier = Modifier.padding(bottom = 16.dp)) { Text("close", color = UiAccent) }
     }
+}
+
+@Composable private fun EmojiSheet(onDismiss: () -> Unit, onPick: (String) -> Unit) {
+    AlertDialog(onDismissRequest = onDismiss, containerColor = UiBubble,
+        title = { Text("choose emoji", color = UiWhite) },
+        text = { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
+            listOf("😊", "👍", "❤️", "✨", "🙏").forEach { emoji -> Text(emoji, Modifier.clickable { onPick(emoji) }.padding(7.dp), fontSize = 24.sp) }
+        } },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("close", color = UiAccent) } })
 }
 
 @Composable private fun AttachmentNotice(onDismiss: () -> Unit, onPick: (String) -> Unit) {

@@ -20,6 +20,9 @@ object SecretVault {
             clear(context, name)
             return
         }
+        // An empty Compose snapshot can occur while the first history read is still running.
+        // Do not let that startup snapshot erase an already-saved encrypted conversation.
+        if (name.startsWith("chat_history:") && value == "[]") return
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
         val packed = cipher.iv + cipher.doFinal(value.toByteArray(Charsets.UTF_8))

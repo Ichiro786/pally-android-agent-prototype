@@ -80,13 +80,16 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
 import kotlin.math.cos
 import kotlin.math.sin
+import org.json.JSONArray
 import org.json.JSONObject
 
 private val UiInk = Color(0xFF070707)
@@ -128,7 +131,7 @@ class ApprovedChatActivity : ComponentActivity() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var screen by remember { mutableStateOf(AgentScreen.CHAT) }
-    var assistant by remember { mutableStateOf("Pally") }
+    var assistant by remember { mutableStateOf(context.getSharedPreferences("agent_state", Context.MODE_PRIVATE).getString("selected_assistant", "Pally") ?: "Pally") }
     var drawer by remember { mutableStateOf(false) }
     var showAttachments by remember { mutableStateOf(false) }
     var showEmoji by remember { mutableStateOf(false) }
@@ -148,16 +151,18 @@ class ApprovedChatActivity : ComponentActivity() {
     var geminiSaved by remember { mutableStateOf(SecretVault.read(context, GeminiLiveSecret) != null) }
     var motion by remember { mutableStateOf(true) }
     val messages = remember { mutableStateListOf<AgentMessage>() }
+    var historyReady by remember { mutableStateOf(false) }
     val connected = client != null && clientName == assistant
 
-    // Seed the first launch with the approved design's illustrative thread. These rows are local UI samples, not chat history.
     LaunchedEffect(Unit) {
-        if (messages.isEmpty()) {
-            messages += AgentMessage(text = "i can help you think it through.\nwhat matters most right now?", fromAssistant = true, sample = true, time = "1:40 am")
-            messages += AgentMessage(text = "compare a few options for this weekend", fromAssistant = false, quoted = "you: can you help me choose?", sample = true, time = "1:41 am")
-            messages += AgentMessage(text = "sure. tell me what you want to optimize for, and i'll keep the trade-offs clear.", fromAssistant = true, sample = true, time = "1:41 am")
-            messages += AgentMessage(text = "keep it simple, and call out the biggest difference", fromAssistant = false, sample = true, time = "1:42 am")
-            messages += AgentMessage(text = "got it. i'll keep the comparison short and easy to scan.", fromAssistant = true, sample = true, time = "1:42 am")
+        val saved = withContext(Dispatchers.IO) { loadChatHistory(context, assistant) }
+        if (saved.isNotEmpty()) messages.addAll(saved) else messages.addAll(sampleConversation())
+        historyReady = true
+    }
+    LaunchedEffect(assistant, messages.size, historyReady) {
+        if (historyReady) {
+            val snapshot = messages.filterNot { it.sample }.takeLast(200)
+            withContext(Dispatchers.IO) { saveChatHistory(context, assistant, snapshot) }
         }
     }
 
@@ -269,7 +274,12 @@ class ApprovedChatActivity : ComponentActivity() {
                 selected = assistant,
                 connectedName = clientName,
                 onChoose = { chosen ->
+                    historyReady = false
                     assistant = chosen
+                    context.getSharedPreferences("agent_state", Context.MODE_PRIVATE).edit().putString("selected_assistant", chosen).apply()
+                    messages.clear()
+                    messages.addAll(loadChatHistory(context, chosen).ifEmpty { sampleConversation() })
+                    historyReady = true
                     screen = AgentScreen.CONNECT
                     error = ""
                     if (chosen == "Fo by Wajo") { endpoint = WajoFoEndpoint; authHeader = "X-API-Key" }
@@ -654,6 +664,54 @@ class ApprovedChatActivity : ComponentActivity() {
             listOf("😊", "👍", "❤️", "✨", "🙏").forEach { emoji -> Text(emoji, Modifier.clickable { onPick(emoji) }.padding(7.dp), fontSize = 24.sp) }
         } },
         confirmButton = { TextButton(onClick = onDismiss) { Text("close", color = UiAccent) } })
+}
+
+private fun sampleConversation() = listOf(
+    AgentMessage(text = "i can help you think it through.\nwhat matters most right now?", fromAssistant = true, sample = true, time = "1:40 am"),
+    AgentMessage(text = "compare a few options for this weekend", fromAssistant = false, quoted = "you: can you help me choose?", sample = true, time = "1:41 am"),
+    AgentMessage(text = "sure. tell me what you want to optimize for, and i'll keep the trade-offs clear.", fromAssistant = true, sample = true, time = "1:41 am"),
+    AgentMessage(text = "keep it simple, and call out the biggest difference", fromAssistant = false, sample = true, time = "1:42 am"),
+    AgentMessage(text = "got it. i'll keep the comparison short and easy to scan.", fromAssistant = true, sample = true, time = "1:42 am")
+)
+
+private fun loadChatHistory(context: Context, assistant: String): List<AgentMessage> {
+    val encoded = SecretVault.read(context, "chat_history:$assistant") ?: return emptyList()
+    return try {
+        val rows = JSONArray(encoded)
+        buildList {
+            for (i in 0 until rows.length()) {
+                val row = rows.optJSONObject(i) ?: continue
+                val text = row.optString("text")
+                if (text.isBlank()) continue
+                add(AgentMessage(
+                    id = row.optString("id").ifBlank { UUID.randomUUID().toString() },
+                    text = text,
+                    fromAssistant = row.optBoolean("fromAssistant"),
+                    quoted = row.optString("quoted").takeIf { row.has("quoted") && it.isNotBlank() },
+                    localOnly = row.optBoolean("localOnly"),
+                    time = row.optString("time").ifBlank { SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date()) }
+                ))
+            }
+        }
+    } catch (_: Exception) {
+        SecretVault.clear(context, "chat_history:$assistant")
+        emptyList()
+    }
+}
+
+private fun saveChatHistory(context: Context, assistant: String, messages: List<AgentMessage>) {
+    val rows = JSONArray()
+    messages.filterNot { it.sample }.takeLast(200).forEach { message ->
+        val row = JSONObject()
+            .put("id", message.id)
+            .put("text", message.text)
+            .put("fromAssistant", message.fromAssistant)
+            .put("localOnly", message.localOnly)
+            .put("time", message.time)
+        message.quoted?.let { row.put("quoted", it) }
+        rows.put(row)
+    }
+    SecretVault.save(context, "chat_history:$assistant", rows.toString())
 }
 
 @Composable private fun AttachmentNotice(onDismiss: () -> Unit, onPick: (String) -> Unit) {

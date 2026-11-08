@@ -10,20 +10,19 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -34,6 +33,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
@@ -44,473 +44,533 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.UUID
 import kotlin.math.cos
 import kotlin.math.sin
 
 private val Ink = Color(0xFF080808)
-private val Card = Color(0xFF1B1B1B)
-private val Edge = Color(0xFF3A3A3A)
-private val White = Color(0xFFF2F1F0)
-private val Dim = Color(0xFFA09F9E)
-private val Accent = Color(0xFFBDCEC8)
-private const val WajoFoEndpoint = "https://mcp.api.wajo.ai/fo"
+private val Bubble = Color(0xFF222120)
+private val Edge = Color(0xFF484644)
+private val White = Color(0xFFF4F2F0)
+private val Muted = Color(0xFFAAA7A4)
+private val Accent = Color(0xFFB8D5D0)
+private const val FoEndpoint = "https://mcp.api.wajo.ai/fo"
 private const val PallyEndpoint = "https://agent.pally.com/mcp"
-private const val MCPSecret = "wajo_mcp_api_key"
-private const val EndpointPref = "mcp_endpoint"
+private const val FoSecret = "wajo_mcp_api_key"
+private const val GeminiSecret = "gemini_live_key"
 
-private enum class Page { CHAT, WORK, ASSISTANTS, MCP, SETTINGS, VOICE }
-private enum class AgentState { IDLE, THINKING, SEARCHING }
-private data class Line(val id: String = UUID.randomUUID().toString(), val text: String, val outgoing: Boolean, val label: String)
+private enum class Screen { CHAT, WORK, ASSISTANTS, MCP, SETTINGS, VOICE }
+private enum class AgentMode { IDLE, THINKING, SEARCHING }
+private data class ChatLine(
+    val id: String = UUID.randomUUID().toString(),
+    val text: String,
+    val fromAssistant: Boolean,
+    val time: String = SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date()),
+    val quote: String? = null,
+    val sample: Boolean = false,
+    val localOnly: Boolean = false
+)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.statusBarColor = android.graphics.Color.BLACK
         window.navigationBarColor = android.graphics.Color.BLACK
-        val systemMotion = try {
-            Settings.Global.getFloat(contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) != 0f
-        } catch (_: Exception) { true }
-        setContent {
-            MaterialTheme(colorScheme = darkColorScheme(primary = Accent, background = Ink, surface = Card, onSurface = White)) {
-                AgentApp(systemMotion)
-            }
-        }
+        val motion = try { Settings.Global.getFloat(contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) != 0f } catch (_: Exception) { true }
+        setContent { MaterialTheme(colorScheme = darkColorScheme(primary = Accent, background = Ink, surface = Bubble, onSurface = White)) { PallyApp(motion) } }
     }
 }
 
-@Composable private fun AgentApp(systemMotion: Boolean) {
+@Composable private fun PallyApp(systemMotion: Boolean) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var page by remember { mutableStateOf(Page.CHAT) }
-    var selected by remember { mutableStateOf("Pally") }
+    var screen by remember { mutableStateOf(Screen.CHAT) }
+    var assistant by remember { mutableStateOf("Pally") }
     var motion by remember { mutableStateOf(systemMotion) }
-    var animationPreview by remember { mutableStateOf(AgentState.IDLE) }
-    val messages = remember { mutableStateListOf<Line>() }
+    var mode by remember { mutableStateOf(AgentMode.IDLE) }
     var draft by remember { mutableStateOf("") }
-    var endpoint by remember { mutableStateOf(context.getSharedPreferences("pally_agent_settings", Context.MODE_PRIVATE).getString(EndpointPref, WajoFoEndpoint) ?: WajoFoEndpoint) }
-    var credential by remember { mutableStateOf("") }
-    var credentialHeader by remember { mutableStateOf("X-API-Key") }
-    var connectionStatus by remember { mutableStateOf("not connected") }
+    var replyQuote by remember { mutableStateOf<String?>(null) }
+    var showAttachments by remember { mutableStateOf(false) }
+    var showEmoji by remember { mutableStateOf(false) }
+    var workDrawer by remember { mutableStateOf(false) }
+    var pendingNote by remember { mutableStateOf("") }
+    var endpoint by remember { mutableStateOf(FoEndpoint) }
+    var apiKey by remember { mutableStateOf("") }
+    var authHeader by remember { mutableStateOf("X-API-Key") }
+    var status by remember { mutableStateOf("not connected") }
     var connectionError by remember { mutableStateOf("") }
-    var working by remember { mutableStateOf(false) }
-    var attachments by remember { mutableStateOf(false) }
-    var activeClient by remember { mutableStateOf<McpClient?>(null) }
-    var activeAssistant by remember { mutableStateOf("") }
-    var connectedTools by remember { mutableStateOf<List<McpTool>>(emptyList()) }
-    var savedGeminiKey by remember { mutableStateOf(SecretVault.read(context, "gemini_live_key") != null) }
-    val hasCurrentConnection = activeClient != null && activeAssistant == selected
+    var busy by remember { mutableStateOf(false) }
+    var client by remember { mutableStateOf<McpClient?>(null) }
+    var clientAssistant by remember { mutableStateOf("") }
+    var tools by remember { mutableStateOf<List<McpTool>>(emptyList()) }
+    var savedGeminiKey by remember { mutableStateOf(SecretVault.read(context, GeminiSecret) != null) }
+    var sampleShown by remember { mutableStateOf(true) }
+    val lines = remember { mutableStateListOf<ChatLine>() }
+    val connected = client != null && clientAssistant == assistant
 
-    BackHandler(page != Page.CHAT || attachments) {
-        if (attachments) attachments = false else page = Page.CHAT
+    LaunchedEffect(Unit) {
+        if (lines.isEmpty()) {
+            lines += ChatLine(text = "i can help you think it through. what matters most right now?", fromAssistant = true, time = "1:40 am", sample = true)
+            lines += ChatLine(text = "compare a few options for this weekend", fromAssistant = false, time = "1:41 am", quote = "you: can you help me choose?", sample = true)
+            lines += ChatLine(text = "sure. tell me what you want to optimize for, and i'll keep the trade-offs clear.", fromAssistant = true, time = "1:41 am", sample = true)
+            lines += ChatLine(text = "keep it simple, and call out the biggest difference", fromAssistant = false, time = "1:42 am", sample = true)
+            lines += ChatLine(text = "got it. i'll keep the comparison short and easy to scan.", fromAssistant = true, time = "1:42 am", sample = true)
+        }
     }
-    LaunchedEffect(animationPreview) {
-        if (animationPreview != AgentState.IDLE) { delay(3500); animationPreview = AgentState.IDLE }
+    BackHandler(screen != Screen.CHAT || workDrawer || showAttachments || showEmoji) {
+        when { showAttachments -> showAttachments = false; showEmoji -> showEmoji = false; workDrawer -> workDrawer = false; else -> screen = Screen.CHAT }
     }
 
-    fun connectMcp() {
-        if (selected == "Pally") {
-            connectionError = "Pally's official connector uses OAuth 2.1 with dynamic registration and PKCE. This preview does not finish that browser flow yet."
-            connectionStatus = "OAuth setup required"
+    fun connect() {
+        if (assistant == "Pally") {
+            status = "sign-in required"
+            connectionError = "Pally's MCP uses OAuth 2.1 with PKCE. This preview does not finish that sign-in flow, so Pally cannot connect here yet."
             return
         }
-        val chosenEndpoint = if (selected == "Fo by Wajo") WajoFoEndpoint else endpoint.trim()
-        val chosenKey = credential.trim().ifBlank { SecretVault.read(context, MCPSecret).orEmpty() }
-        if (chosenEndpoint.isBlank()) { connectionError = "Enter an HTTPS MCP endpoint."; return }
-        if (selected == "Fo by Wajo" && !chosenKey.startsWith("wak_")) {
-            connectionError = "Wajo's documented API key starts with wak_. Enter it in the app; do not send it in chat."
-            return
-        }
+        val target = if (assistant == "Fo by Wajo") FoEndpoint else endpoint.trim()
+        val secret = apiKey.trim().ifBlank { SecretVault.read(context, FoSecret).orEmpty() }
+        if (!target.startsWith("https://")) { connectionError = "Enter an HTTPS MCP endpoint."; return }
+        if (assistant == "Fo by Wajo" && !secret.startsWith("wak_")) { connectionError = "Enter your Wajo API key in the app. It should start with wak_. Do not send it in chat."; return }
         connectionError = ""
-        connectionStatus = "connecting…"
-        working = true
+        status = "connecting…"
+        busy = true
         scope.launch {
             try {
-                val client = McpClient(chosenEndpoint, chosenKey, credentialHeader)
-                val found = client.connectAndListTools()
-                if (selected == "Fo by Wajo" && found.none { it.name == "ask_fo" }) {
-                    throw IllegalStateException("The server connected but did not expose ask_fo, so it is not the Wajo Fo profile.")
-                }
-                activeClient = client
-                activeAssistant = selected
-                connectedTools = found
-                context.getSharedPreferences("pally_agent_settings", Context.MODE_PRIVATE).edit().putString(EndpointPref, chosenEndpoint).apply()
-                if (chosenKey.isNotBlank()) SecretVault.save(context, MCPSecret, chosenKey)
-                credential = ""
-                connectionStatus = "connected · ${found.size} tools"
+                val opened = McpClient(target, secret, authHeader)
+                val available = opened.connectAndListTools()
+                if (assistant == "Fo by Wajo" && available.none { it.name == "ask_fo" }) throw IllegalStateException("The endpoint connected but did not advertise ask_fo, so it is not the Fo profile.")
+                client = opened
+                clientAssistant = assistant
+                tools = available
+                status = "connected · ${available.size} tools"
+                if (assistant == "Fo by Wajo") SecretVault.save(context, FoSecret, secret)
+                apiKey = ""
             } catch (e: Exception) {
-                activeClient = null
-                activeAssistant = ""
-                connectedTools = emptyList()
-                connectionStatus = "connection failed"
-                connectionError = e.message ?: "Could not connect to the MCP server."
-            } finally { working = false }
+                client = null; clientAssistant = ""; tools = emptyList()
+                status = "connection failed"
+                connectionError = e.message ?: "Could not connect to this MCP server."
+            } finally { busy = false }
         }
     }
 
-    fun disconnectMcp() {
-        activeClient = null
-        activeAssistant = ""
-        connectedTools = emptyList()
-        SecretVault.clear(context, MCPSecret)
-        connectionStatus = "disconnected"
-        connectionError = "The saved Wajo key was erased from this device."
-    }
-
-    fun sendMessage() {
+    fun send() {
         val text = draft.trim()
-        if (text.isBlank() || working) return
+        if (text.isBlank() || busy) return
+        if (sampleShown) { lines.clear(); sampleShown = false }
         draft = ""
-        if (selected == "Fo by Wajo" && hasCurrentConnection) {
-            messages.add(Line(text = text, outgoing = true, label = "sent to Fo"))
-            working = true
-            animationPreview = AgentState.THINKING
+        val quote = replyQuote
+        replyQuote = null
+        if (assistant == "Fo by Wajo" && connected) {
+            lines += ChatLine(text = text, fromAssistant = false, quote = quote)
+            busy = true; mode = AgentMode.THINKING
             scope.launch {
                 try {
-                    val client = activeClient ?: throw IllegalStateException("Reconnect to Fo before sending.")
-                    val reply = FoAdapter.send(client, connectedTools, text)
-                    messages.add(Line(text = reply, outgoing = false, label = "Fo by Wajo"))
+                    val current = client ?: error("Reconnect to Fo first.")
+                    val answer = FoAdapter.send(current, tools, text)
+                    lines += ChatLine(text = answer, fromAssistant = true)
                 } catch (e: Exception) {
-                    messages.add(Line(text = "I couldn't get a reply from Fo: ${e.message ?: "connection error"}", outgoing = false, label = "connection issue"))
-                } finally {
-                    working = false
-                    animationPreview = AgentState.IDLE
-                }
+                    lines += ChatLine(text = "I couldn't get a reply from Fo: ${e.message ?: "connection error"}", fromAssistant = true)
+                } finally { busy = false; mode = AgentMode.IDLE }
             }
         } else {
-            messages.add(Line(text = text, outgoing = true, label = "local only · not sent"))
-            connectionError = if (selected == "Pally") "Pally is not connected in this preview. Its OAuth flow is not implemented yet." else "Connect Fo by Wajo to send a live assistant message."
+            lines += ChatLine(text = text, fromAssistant = false, quote = quote, localOnly = true)
+            pendingNote = if (assistant == "Pally") "This message stayed on this device. Pally sign-in isn't available in this preview." else "This message stayed on this device. Connect Fo by Wajo to get a live reply."
         }
+    }
+
+    fun disconnect() {
+        client = null; clientAssistant = ""; tools = emptyList()
+        SecretVault.clear(context, FoSecret)
+        status = "disconnected"; connectionError = "Saved Wajo API key erased from this device."
     }
 
     Box(Modifier.fillMaxSize().background(Ink)) {
-        Scanlines(Modifier.matchParentSize())
-        when (page) {
-            Page.CHAT -> Chat(
-                name = selected,
-                messages = messages,
-                input = draft,
-                onInput = { draft = it },
-                state = animationPreview,
-                motion = motion,
-                connected = hasCurrentConnection,
-                working = working,
-                note = connectionError,
-                onMenu = { page = Page.WORK },
-                onCall = { page = Page.VOICE },
-                onBrand = { page = Page.ASSISTANTS },
-                onAdd = { attachments = true },
-                onSend = { sendMessage() }
-            )
-            Page.WORK -> Work({ page = Page.CHAT }, { page = Page.ASSISTANTS }, { page = Page.SETTINGS })
-            Page.ASSISTANTS -> Assistants(
-                selected = selected,
-                connectedAssistant = activeAssistant,
-                onChoose = { name ->
-                    selected = name
-                    if (name == "Fo by Wajo") { endpoint = WajoFoEndpoint; credentialHeader = "X-API-Key" }
-                    if (name == "Pally") endpoint = PallyEndpoint
-                    page = Page.MCP
-                },
-                back = { page = Page.CHAT }
-            )
-            Page.MCP -> McpSetup(
-                selected = selected,
-                endpoint = endpoint,
-                onEndpoint = { endpoint = it },
-                credential = credential,
-                onCredential = { credential = it },
-                credentialHeader = credentialHeader,
-                onCredentialHeader = { credentialHeader = it },
-                status = connectionStatus,
-                error = connectionError,
-                tools = if (activeAssistant == selected) connectedTools else emptyList(),
-                busy = working,
-                onConnect = { connectMcp() },
-                onDisconnect = { disconnectMcp() },
-                onOpenDocs = {
-                    val url = if (selected == "Pally") "https://pally.com/mcp" else "https://wajo.ai/docs/mcp-server.md"
-                    runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
-                },
-                back = { page = Page.ASSISTANTS }
-            )
-            Page.SETTINGS -> Preferences(
-                motion = motion,
-                onMotion = { motion = it },
-                savedGeminiKey = savedGeminiKey,
-                onSaveGeminiKey = { value ->
-                    SecretVault.save(context, "gemini_live_key", value.trim())
-                    savedGeminiKey = value.isNotBlank()
-                },
-                onClearGeminiKey = { SecretVault.clear(context, "gemini_live_key"); savedGeminiKey = false },
-                onBack = { page = Page.CHAT },
-                onPreview = { animationPreview = it; page = Page.CHAT }
-            )
-            Page.VOICE -> Voice(motion, onSettings = { page = Page.SETTINGS }, onBack = { page = Page.CHAT })
+        ScanlineBackdrop(Modifier.matchParentSize())
+        when (screen) {
+            Screen.CHAT -> ChatScreen(assistant, lines, draft, { draft = it }, connected, busy, mode, motion,
+                pendingNote, onMenu = { workDrawer = true }, onCall = { screen = Screen.VOICE },
+                onLogo = { screen = Screen.ASSISTANTS }, onAdd = { showAttachments = true },
+                onEmoji = { showEmoji = true }, onMic = { screen = Screen.VOICE }, onSend = { send() },
+                onReply = { replyQuote = if (it.fromAssistant) "${assistant}: ${it.text}" else "you: ${it.text}" },
+                onNoteDismiss = { pendingNote = "" })
+            Screen.WORK -> WorkScreen({ screen = Screen.CHAT }, { screen = Screen.ASSISTANTS }, { screen = Screen.SETTINGS }, { screen = Screen.MCP })
+            Screen.ASSISTANTS -> AssistantScreen(assistant, clientAssistant, { chosen -> assistant = chosen; screen = Screen.MCP; connectionError = ""; if (chosen == "Fo by Wajo") { endpoint = FoEndpoint; authHeader = "X-API-Key" } }, { screen = Screen.CHAT })
+            Screen.MCP -> ConnectionScreen(assistant, endpoint, { endpoint = it }, apiKey, { apiKey = it }, authHeader, { authHeader = it }, status, connectionError, tools, busy, { connect() }, { disconnect() }, { name ->
+                val url = if (name == "Pally") PallyEndpoint else "https://wajo.ai/docs/mcp-server.md"
+                runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+            }, { screen = Screen.ASSISTANTS })
+            Screen.SETTINGS -> SettingsScreen(motion, { motion = it }, savedGeminiKey,
+                { value -> SecretVault.save(context, GeminiSecret, value); savedGeminiKey = value.isNotBlank() },
+                { SecretVault.clear(context, GeminiSecret); savedGeminiKey = false },
+                { screen = Screen.CHAT }, { mode = it; screen = Screen.CHAT })
+            Screen.VOICE -> VoiceScreen(motion, savedGeminiKey, { screen = Screen.SETTINGS }, { screen = Screen.CHAT })
         }
+        if (screen == Screen.CHAT && workDrawer) WorkDrawer(
+            onClose = { workDrawer = false }, onConnections = { workDrawer = false; screen = Screen.ASSISTANTS },
+            onSettings = { workDrawer = false; screen = Screen.SETTINGS }, onMcp = { workDrawer = false; screen = Screen.MCP }
+        )
+        if (screen == Screen.CHAT && showAttachments) AttachmentSheet(onDismiss = { showAttachments = false }, onPick = { item ->
+            showAttachments = false; pendingNote = "$item selection is shown in the mockup; this provider adapter can't send attachments yet."
+        })
+        if (screen == Screen.CHAT && showEmoji) EmojiSheet(onDismiss = { showEmoji = false }, onPick = { emoji -> draft += emoji; showEmoji = false })
     }
-    if (attachments) AlertDialog(
-        onDismissRequest = { attachments = false },
-        title = { Text("Attachments") },
-        text = { Text("File and image attachments are not implemented in this build.") },
-        confirmButton = { TextButton(onClick = { attachments = false }) { Text("OK") } }
-    )
 }
 
-@Composable private fun Scanlines(modifier: Modifier = Modifier) {
+@Composable private fun ScanlineBackdrop(modifier: Modifier = Modifier) {
     Canvas(modifier) {
-        val brush = Brush.horizontalGradient(listOf(Color.Transparent, Color.White.copy(alpha = .04f), Color.White.copy(alpha = .045f), Color.Transparent))
-        val spacing = 5.dp.toPx()
-        var y = 0f
-        while (y < size.height) { drawLine(brush, Offset(0f, y), Offset(size.width, y), strokeWidth = .45.dp.toPx()); y += spacing }
+        val fade = Brush.horizontalGradient(listOf(Color.Transparent, Color.White.copy(alpha = .018f), Color.White.copy(alpha = .028f), Color.White.copy(alpha = .018f), Color.Transparent))
+        val gap = 5.dp.toPx(); var y = 0f
+        while (y < size.height) { drawLine(fade, Offset(0f, y), Offset(size.width, y), strokeWidth = .55.dp.toPx()); y += gap }
     }
 }
 
-@Composable private fun CircleControl(icon: androidx.compose.ui.graphics.vector.ImageVector, description: String, onClick: () -> Unit) {
-    Surface(onClick = onClick, modifier = Modifier.size(48.dp), shape = CircleShape, color = Card.copy(alpha = .92f), border = BorderStroke(1.dp, Edge)) {
-        Box(contentAlignment = Alignment.Center) { Icon(icon, description, modifier = Modifier.size(23.dp), tint = White) }
+@Composable private fun CircleButton(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit, size: Int = 52) {
+    Surface(onClick = onClick, modifier = Modifier.size(size.dp).semantics { contentDescription = label }, shape = CircleShape,
+        color = Color(0xFF151515).copy(alpha = .92f), border = BorderStroke(1.dp, Edge)) {
+        Box(contentAlignment = Alignment.Center) { Icon(icon, null, tint = White, modifier = Modifier.size(24.dp)) }
     }
 }
 
-@Composable private fun Brand(name: String, state: AgentState, motion: Boolean, click: () -> Unit) {
-    val transition = rememberInfiniteTransition(label = "assistant motion")
-    val angle by transition.animateFloat(0f, 360f, infiniteRepeatable(tween(7000, easing = LinearEasing)), label = "ring")
-    val pulse by transition.animateFloat(.96f, 1.05f, infiniteRepeatable(tween(1300), RepeatMode.Reverse), label = "pulse")
-    Box(Modifier.size(62.dp).clip(CircleShape).clickable(onClick = click).border(1.dp, Edge, CircleShape).semantics { contentDescription = "Selected assistant $name, open assistants" }, contentAlignment = Alignment.Center) {
-        if (state != AgentState.IDLE) Canvas(Modifier.fillMaxSize().graphicsLayer { rotationZ = if (motion) angle else 0f }) {
-            drawCircle(Brush.sweepGradient(listOf(Color.Transparent, Accent, Color.Transparent)), style = Stroke(1.5.dp.toPx()))
+@Composable private fun AssistantMark(name: String, mode: AgentMode, motion: Boolean, onClick: () -> Unit, size: Int = 72) {
+    val transition = rememberInfiniteTransition(label = "assistant mark")
+    val rotation by transition.animateFloat(0f, 360f, infiniteRepeatable(tween(6500, easing = LinearEasing)), label = "orbit")
+    val pulse by transition.animateFloat(.96f, 1.045f, infiniteRepeatable(tween(1200, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "pulse")
+    Box(Modifier.size(size.dp).clip(CircleShape).clickable(onClick = onClick).border(1.dp, Edge, CircleShape).semantics { contentDescription = "$name assistant, select assistant" }, contentAlignment = Alignment.Center) {
+        if (mode != AgentMode.IDLE && motion) Canvas(Modifier.fillMaxSize().graphicsLayer { rotationZ = rotation }) {
+            drawCircle(Brush.sweepGradient(listOf(Color.Transparent, Accent.copy(alpha = .85f), Color.Transparent)), style = Stroke(1.5.dp.toPx()))
         }
-        if (name == "Pally") Image(
-            painter = painterResource(R.drawable.pally_logo),
-            contentDescription = "Pally logo",
-            modifier = Modifier.size(45.dp).scale(if (motion && state != AgentState.IDLE) pulse else 1f)
-                .graphicsLayer { rotationZ = if (motion && state == AgentState.SEARCHING) angle else 0f }
-                .clip(CircleShape)
-        ) else Text(if (name == "Fo by Wajo") "Fo" else "M", color = White, fontSize = 20.sp, fontWeight = FontWeight.Medium)
+        if (name == "Pally") Image(painterResource(R.drawable.pally_logo), "Pally logo", Modifier.size((size - 20).dp).scale(if (motion && mode != AgentMode.IDLE) pulse else 1f).clip(CircleShape))
+        else Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(if (name == "Fo by Wajo") "Fo" else "MCP", color = White, fontSize = if (name == "Fo by Wajo") 18.sp else 13.sp, fontWeight = FontWeight.Medium)
+            if (name == "Fo by Wajo") Text("by Wajo", color = Muted, fontSize = 8.sp)
+        }
     }
 }
 
-@Composable private fun TopBar(name: String, state: AgentState, motion: Boolean, menu: () -> Unit, call: () -> Unit, brand: () -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-        CircleControl(Icons.Default.Menu, "Open your work", menu)
-        Brand(name, state, motion, brand)
-        CircleControl(Icons.Default.Call, "Open voice", call)
+@Composable private fun TopBar(name: String, mode: AgentMode, motion: Boolean, menu: () -> Unit, call: () -> Unit, logo: () -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 19.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+        CircleButton(Icons.Default.Menu, "Open your work", menu)
+        AssistantMark(name, mode, motion, logo)
+        CircleButton(Icons.Default.Call, "Open voice", call)
     }
 }
 
-@Composable private fun Chat(
-    name: String, messages: SnapshotStateList<Line>, input: String, onInput: (String) -> Unit,
-    state: AgentState, motion: Boolean, connected: Boolean, working: Boolean, note: String,
-    onMenu: () -> Unit, onCall: () -> Unit, onBrand: () -> Unit, onAdd: () -> Unit, onSend: () -> Unit
+@Composable private fun DayDivider(text: String = "today") {
+    Row(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        HorizontalDivider(Modifier.weight(1f), color = Edge.copy(alpha = .50f))
+        Text(text, Modifier.padding(horizontal = 16.dp), color = Muted, fontSize = 13.sp)
+        HorizontalDivider(Modifier.weight(1f), color = Edge.copy(alpha = .50f))
+    }
+}
+
+@Composable private fun ChatScreen(
+    name: String, lines: List<ChatLine>, input: String, onInput: (String) -> Unit, connected: Boolean,
+    busy: Boolean, mode: AgentMode, motion: Boolean, note: String, onMenu: () -> Unit,
+    onCall: () -> Unit, onLogo: () -> Unit, onAdd: () -> Unit, onEmoji: () -> Unit,
+    onMic: () -> Unit, onSend: () -> Unit, onReply: (ChatLine) -> Unit, onNoteDismiss: () -> Unit
 ) {
-    val list = rememberLazyListState()
-    LaunchedEffect(messages.size) { if (messages.isNotEmpty()) list.animateScrollToItem(messages.size - 1) }
+    val list = androidx.compose.foundation.lazy.rememberLazyListState()
+    LaunchedEffect(lines.size) { if (lines.isNotEmpty()) list.animateScrollToItem(lines.size - 1) }
     Column(Modifier.fillMaxSize().imePadding()) {
-        TopBar(name, state, motion, onMenu, onCall, onBrand)
-        val subtitle = when {
-            connected -> "$name · connected"
-            name == "Custom MCP tools" -> "MCP tools · not connected"
-            else -> "$name · not connected"
-        }
-        Text(subtitle, Modifier.fillMaxWidth(), color = Dim, fontSize = 14.sp, textAlign = TextAlign.Center)
-        if (messages.isEmpty()) {
-            Column(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 28.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                Text("your conversation starts here", color = White, fontSize = 23.sp, textAlign = TextAlign.Center)
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    if (connected && name == "Fo by Wajo") "Fo is connected. Send a message to start a real conversation." else "Connect an assistant to send a message. Unconnected messages stay on this device.",
-                    color = Dim, fontSize = 13.sp, lineHeight = 19.sp, textAlign = TextAlign.Center
-                )
+        TopBar(name, mode, motion, onMenu, onCall, onLogo)
+        DayDivider()
+        if (lines.isEmpty()) {
+            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Text("your conversation starts here", color = White, fontSize = 20.sp, textAlign = TextAlign.Center)
             }
-        } else LazyColumn(state = list, modifier = Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(horizontal = 18.dp, vertical = 24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            items(messages, key = { it.id }) { message ->
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = if (message.outgoing) Arrangement.End else Arrangement.Start) {
-                    Surface(color = if (message.outgoing) Color(0xFF111111) else Card, shape = RoundedCornerShape(22.dp), border = BorderStroke(1.dp, Edge), modifier = Modifier.widthIn(max = 310.dp)) {
-                        Column(Modifier.padding(horizontal = 16.dp, vertical = 13.dp)) {
-                            Text(message.text, color = White, fontSize = 16.sp, lineHeight = 23.sp)
-                            Text(message.label, Modifier.align(Alignment.End).padding(top = 6.dp), color = Dim, fontSize = 10.sp)
+        } else {
+            LazyColumn(state = list, modifier = Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(start = 19.dp, end = 19.dp, top = 18.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
+                val demo = lines.any { it.sample }
+                if (demo) item { Text("sample preview · not connected", Modifier.fillMaxWidth().padding(bottom = 1.dp), color = Muted.copy(alpha = .72f), fontSize = 10.sp, textAlign = TextAlign.Center) }
+                items(lines, key = { it.id }) { line -> ChatBubble(line, name, onReply) }
+                if (busy) item {
+                    Row(Modifier.fillMaxWidth().padding(start = 5.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        AssistantMark(name, mode, motion, {}, size = 30)
+                        Text(if (mode == AgentMode.SEARCHING) "  searching" else "  ${name} is thinking", color = Muted, fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+        if (note.isNotBlank()) Surface(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp), color = Color(0xFF171717), shape = RoundedCornerShape(12.dp), border = BorderStroke(1.dp, Edge)) {
+            Row(Modifier.padding(start = 12.dp, end = 6.dp, top = 7.dp, bottom = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(note, Modifier.weight(1f), color = Muted, fontSize = 11.sp, lineHeight = 15.sp)
+                IconButton(onClick = onNoteDismiss, modifier = Modifier.size(28.dp)) { Icon(Icons.Default.Close, "Dismiss", tint = Muted, modifier = Modifier.size(16.dp)) }
+            }
+        }
+        Composer(name, input, onInput, onAdd, onEmoji, onMic, onSend)
+    }
+}
+
+@Composable private fun ChatBubble(line: ChatLine, assistant: String, onReply: (ChatLine) -> Unit) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (line.fromAssistant) Arrangement.Start else Arrangement.End) {
+        Column(Modifier.widthIn(max = 320.dp).fillMaxWidth(.88f)) {
+            if (line.fromAssistant) Row(Modifier.padding(start = 5.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                AssistantMark(assistant, AgentMode.IDLE, false, {}, size = 24)
+                Text("  $assistant", color = Muted, fontSize = 12.sp)
+            }
+            Surface(
+                modifier = Modifier.pointerInput(line.id) { detectTapGestures(onLongPress = { onReply(line) }) },
+                color = if (line.fromAssistant) Bubble else Color(0xFF111111),
+                shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp, bottomStart = if (line.fromAssistant) 5.dp else 22.dp, bottomEnd = if (line.fromAssistant) 22.dp else 5.dp),
+                border = if (line.fromAssistant) null else BorderStroke(1.dp, Edge.copy(alpha = .75f))
+            ) {
+                Column(Modifier.padding(start = 15.dp, end = 14.dp, top = 13.dp, bottom = 8.dp)) {
+                    if (line.quote != null) Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Color(0xFF3B3A39)).padding(horizontal = 10.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.width(3.dp).height(31.dp).background(White, RoundedCornerShape(2.dp)))
+                        Text(line.quote, Modifier.padding(start = 8.dp), color = Color(0xFFD1CFCD), fontSize = 13.sp, maxLines = 2, lineHeight = 17.sp)
+                    }
+                    Text(line.text, Modifier.padding(top = if (line.quote != null) 8.dp else 0.dp), color = White, fontSize = 16.sp, lineHeight = 23.sp)
+                    Row(Modifier.align(Alignment.End).padding(top = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+                        if (line.localOnly) Text("local · not sent   ", color = Muted, fontSize = 9.sp)
+                        Text(line.time, color = Muted, fontSize = 10.sp)
+                        if (!line.fromAssistant && !line.localOnly) {
+                            Spacer(Modifier.width(5.dp))
+                            Icon(Icons.Default.DoneAll, "Sent", tint = Color(0xFF90C7DF), modifier = Modifier.size(15.dp))
                         }
                     }
                 }
             }
         }
-        if (working) Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-            CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 1.5.dp, color = Accent)
-            Text("  ${if (name == "Fo by Wajo") "Fo is replying" else "connecting"}…", color = Dim, fontSize = 12.sp)
-        } else if (state != AgentState.IDLE) Text(if (state == AgentState.THINKING) "thinking" else "searching", Modifier.fillMaxWidth().padding(bottom = 8.dp), color = Dim, fontSize = 12.sp, textAlign = TextAlign.Center)
-        if (note.isNotBlank()) Text(note, Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 4.dp), color = Dim, fontSize = 11.sp, lineHeight = 15.sp, textAlign = TextAlign.Center, maxLines = 3)
-        Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            CircleControl(Icons.Default.Add, "Attachments unavailable", onAdd)
-            TextField(
-                value = input, onValueChange = onInput, modifier = Modifier.weight(1f).heightIn(min = 48.dp), maxLines = 4,
-                placeholder = { Text("message $name", color = Dim, fontSize = 15.sp) }, shape = RoundedCornerShape(27.dp),
-                colors = TextFieldDefaults.colors(focusedContainerColor = Card, unfocusedContainerColor = Card, focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent, cursorColor = Accent)
-            )
-            CircleControl(Icons.AutoMirrored.Filled.Send, if (connected) "Send to $name" else "Add local message", onSend)
+    }
+}
+
+@Composable private fun Composer(name: String, value: String, onValue: (String) -> Unit, onAdd: () -> Unit, onEmoji: () -> Unit, onMic: () -> Unit, onSend: () -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+        CircleButton(Icons.Default.Add, "Add attachment", onAdd, size = 54)
+        Surface(Modifier.weight(1f).heightIn(min = 54.dp), shape = RoundedCornerShape(30.dp), color = Color(0xFF1C1B1A), border = BorderStroke(1.dp, Edge)) {
+            Row(Modifier.padding(start = 17.dp, end = 8.dp, top = 7.dp, bottom = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+                BasicTextField(value = value, onValueChange = onValue, modifier = Modifier.weight(1f), textStyle = androidx.compose.ui.text.TextStyle(color = White, fontSize = 16.sp, lineHeight = 21.sp), maxLines = 4, keyboardOptions = KeyboardOptions.Default, decorationBox = { inner ->
+                    if (value.isEmpty()) Text("message $name", color = Muted, fontSize = 15.sp)
+                    inner()
+                })
+                IconButton(onClick = onEmoji, modifier = Modifier.size(36.dp)) { Icon(Icons.Default.EmojiEmotions, "Choose emoji", tint = White, modifier = Modifier.size(22.dp)) }
+            }
+        }
+        CircleButton(if (value.isBlank()) Icons.Default.Mic else Icons.AutoMirrored.Filled.Send, if (value.isBlank()) "Voice preview" else "Send message", if (value.isBlank()) onMic else onSend, size = 54)
+    }
+}
+
+@Composable private fun ScreenTop(name: String, title: String, back: () -> Unit, call: () -> Unit = {}) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 19.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+        CircleButton(Icons.Default.Menu, "Back to your work", back)
+        AssistantMark(name, AgentMode.IDLE, false, {}, size = 62)
+        CircleButton(Icons.Default.Close, "Close $title", call, size = 52)
+    }
+    DayDivider()
+    Text(title, Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 14.dp), color = White, fontSize = 25.sp, fontWeight = FontWeight.Normal)
+}
+
+@Composable private fun WorkScreen(back: () -> Unit, assistants: () -> Unit, settings: () -> Unit, mcp: () -> Unit) {
+    Column(Modifier.fillMaxSize()) {
+        ScreenTop("Pally", "our work", back)
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 22.dp)) {
+            Text("in progress", color = Muted, fontSize = 12.sp)
+            Text("nothing underway yet", Modifier.padding(top = 12.dp, bottom = 24.dp), color = Muted, fontSize = 14.sp)
+            HorizontalDivider(color = Edge.copy(alpha = .5f))
+            Text("connect", Modifier.padding(top = 22.dp, bottom = 10.dp), color = Muted, fontSize = 12.sp)
+            MenuRow(Icons.Default.Hub, "assistants & tools", "manage assistant connections", assistants)
+            MenuRow(Icons.Default.Storage, "MCP server", "add a trusted server", mcp)
+            Spacer(Modifier.weight(1f))
+        }
+        MenuRow(Icons.Default.Person, "your space", "settings and profile", settings, Modifier.padding(horizontal = 18.dp, vertical = 14.dp))
+    }
+}
+
+@Composable private fun WorkDrawer(onClose: () -> Unit, onConnections: () -> Unit, onSettings: () -> Unit, onMcp: () -> Unit) {
+    Row(Modifier.fillMaxSize().background(Color.Black.copy(alpha = .62f))) {
+        Column(Modifier.fillMaxHeight().fillMaxWidth(.78f).background(Color(0xFF0B0B0B)).padding(horizontal = 20.dp)) {
+            Row(Modifier.fillMaxWidth().padding(top = 28.dp, bottom = 24.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("our work", color = White, fontSize = 24.sp)
+                IconButton(onClick = onClose) { Icon(Icons.Default.Close, "Close drawer", tint = White) }
+            }
+            HorizontalDivider(color = Edge)
+            Text("in progress", Modifier.padding(top = 24.dp, bottom = 14.dp), color = Muted, fontSize = 12.sp)
+            Text("no active work", color = Muted, fontSize = 14.sp)
+            HorizontalDivider(Modifier.padding(top = 24.dp), color = Edge)
+            Text("connect", Modifier.padding(top = 22.dp, bottom = 12.dp), color = Muted, fontSize = 12.sp)
+            MenuRow(Icons.Default.Hub, "assistants & tools", "manage connections", onConnections)
+            MenuRow(Icons.Default.Storage, "MCP server", "connect a trusted endpoint", onMcp)
+            Spacer(Modifier.weight(1f))
+            MenuRow(Icons.Default.Person, "your space", "settings and profile", onSettings, Modifier.padding(bottom = 20.dp))
+        }
+        Box(Modifier.fillMaxSize().clickable(onClick = onClose))
+    }
+}
+
+@Composable private fun MenuRow(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, subtitle: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Surface(onClick = onClick, modifier = modifier.fillMaxWidth().padding(vertical = 5.dp), color = Color.Transparent) {
+        Row(Modifier.padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(icon, null, tint = Muted, modifier = Modifier.size(22.dp))
+            Column(Modifier.weight(1f).padding(start = 14.dp)) {
+                Text(title, color = White, fontSize = 15.sp)
+                Text(subtitle, color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 3.dp))
+            }
+            Icon(Icons.Default.ChevronRight, null, tint = Muted, modifier = Modifier.size(18.dp))
         }
     }
 }
 
-@Composable private fun ScreenHeader(title: String, back: () -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-        IconButton(onClick = back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = White) }
-        Text(title, Modifier.padding(start = 6.dp), color = White, fontSize = 24.sp)
-    }
-}
-
-@Composable private fun RowCard(title: String, subtitle: String, click: () -> Unit) {
-    Surface(onClick = click, modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp), color = Card, shape = RoundedCornerShape(18.dp), border = BorderStroke(1.dp, Edge)) {
-        Column(Modifier.padding(17.dp)) { Text(title, color = White, fontSize = 16.sp); Spacer(Modifier.height(3.dp)); Text(subtitle, color = Dim, fontSize = 12.sp, lineHeight = 17.sp) }
-    }
-}
-
-@Composable private fun Work(back: () -> Unit, connections: () -> Unit, settings: () -> Unit) {
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp)) {
-        ScreenHeader("your work", back)
-        Text("Your assistant connections and app preferences", color = Dim, fontSize = 13.sp)
-        Spacer(Modifier.height(24.dp))
-        RowCard("assistants & tools", "Choose Pally or connect Fo by Wajo through MCP", connections)
-        RowCard("preferences", "Motion, animation and Gemini Live key settings", settings)
-    }
-}
-
-@Composable private fun Assistants(selected: String, connectedAssistant: String, onChoose: (String) -> Unit, back: () -> Unit) {
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp)) {
-        ScreenHeader("assistants", back)
-        Text("Choose a chat assistant or connect a separate MCP tool server", color = Dim, fontSize = 13.sp, lineHeight = 18.sp)
-        Spacer(Modifier.height(20.dp))
-        RowCard("Pally${if (selected == "Pally") "  · selected" else ""}", "Official MCP endpoint · OAuth 2.1 PKCE flow is not implemented in this build") { onChoose("Pally") }
-        RowCard("Fo by Wajo${if (selected == "Fo by Wajo") "  · selected" else ""}", if (connectedAssistant == "Fo by Wajo") "Connected · open settings to inspect tools" else "Wajo's dedicated Fo profile · connect using your Wajo API key") { onChoose("Fo by Wajo") }
-        RowCard("Custom MCP tools${if (selected == "Custom MCP tools") "  · selected" else ""}", "Connect an HTTPS MCP server and inspect its advertised tools; tools are not chat assistants") { onChoose("Custom MCP tools") }
-        Text("Only Fo chat is wired to a live assistant in this build. MCP tools are not automatically safe or universally compatible. Native message reactions depend on provider support and are not enabled here.", Modifier.padding(top = 18.dp), color = Dim, fontSize = 12.sp, lineHeight = 18.sp)
-    }
-}
-
-@Composable private fun McpSetup(
-    selected: String, endpoint: String, onEndpoint: (String) -> Unit,
-    credential: String, onCredential: (String) -> Unit,
-    credentialHeader: String, onCredentialHeader: (String) -> Unit,
-    status: String, error: String, tools: List<McpTool>, busy: Boolean,
-    onConnect: () -> Unit, onDisconnect: () -> Unit, onOpenDocs: () -> Unit, back: () -> Unit
-) {
-    val isPally = selected == "Pally"
-    val isFo = selected == "Fo by Wajo"
-    Column(Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp)) {
-        ScreenHeader(if (isPally) "Pally connection" else if (isFo) "Fo by Wajo" else "MCP tools", back)
-        when {
-            isPally -> {
-                Text("Pally MCP", color = White, fontSize = 20.sp)
-                Text("Official endpoint: $PallyEndpoint\nPally documents OAuth 2.1 with dynamic client registration and PKCE. This build does not complete that sign-in flow, so it cannot connect Pally yet.", Modifier.padding(vertical = 14.dp), color = Dim, fontSize = 13.sp, lineHeight = 20.sp)
-                OutlinedButton(onClick = onOpenDocs, modifier = Modifier.fillMaxWidth()) { Text("open Pally connection guide") }
+@Composable private fun AssistantScreen(selected: String, connectedAssistant: String, choose: (String) -> Unit, back: () -> Unit) {
+    Column(Modifier.fillMaxSize()) {
+        ScreenTop(selected, "assistants", back)
+        Text("choose the assistant for this conversation", Modifier.padding(horizontal = 22.dp, vertical = 4.dp), color = Muted, fontSize = 13.sp)
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 16.dp)) {
+            AssistantCard("Pally", "Pally", selected == "Pally", connectedAssistant == "Pally", "official assistant · OAuth sign-in required") { choose("Pally") }
+            AssistantCard("Fo by Wajo", "Fo", selected == "Fo by Wajo", connectedAssistant == "Fo by Wajo", "Wajo's single-assistant MCP profile") { choose("Fo by Wajo") }
+            AssistantCard("Custom MCP tools", "MCP", selected == "Custom MCP tools", connectedAssistant == "Custom MCP tools", "tool server · not an assistant by itself") { choose("Custom MCP tools") }
+            Surface(Modifier.fillMaxWidth().padding(top = 16.dp), color = Bubble, shape = RoundedCornerShape(18.dp), border = BorderStroke(1.dp, Edge)) {
+                Text("Each connection has its own auth and capabilities. MCP servers expose tools; they do not all provide a conversational assistant. Native message reactions depend on the provider.", Modifier.padding(15.dp), color = Muted, fontSize = 12.sp, lineHeight = 18.sp)
             }
-            else -> {
-                Text(if (isFo) "Connect Fo's dedicated MCP profile" else "Connect a compatible HTTPS MCP server", color = White, fontSize = 20.sp)
-                Text(
-                    if (isFo) "Wajo documents https://mcp.api.wajo.ai/fo as a single-assistant profile with ask_fo and get_fo_reply. A Wajo API key may be sent in X-API-Key or Authorization: Bearer.",
-                    Modifier.padding(vertical = 12.dp), color = Dim, fontSize = 12.sp, lineHeight = 18.sp
-                )
+        }
+        PillButton("manage connections", back, Modifier.padding(horizontal = 20.dp, vertical = 16.dp))
+    }
+}
+
+@Composable private fun AssistantCard(name: String, mark: String, selected: Boolean, connected: Boolean, detail: String, onClick: () -> Unit) {
+    Surface(onClick = onClick, modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp), shape = RoundedCornerShape(18.dp), color = Bubble, border = BorderStroke(1.dp, if (selected) Accent.copy(alpha = .65f) else Edge)) {
+        Row(Modifier.padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (name == "Pally") AssistantMark("Pally", AgentMode.IDLE, false, {}, size = 40) else Box(Modifier.size(40.dp).clip(CircleShape).border(1.dp, Edge, CircleShape), contentAlignment = Alignment.Center) { Text(mark, color = White, fontSize = 13.sp) }
+            Column(Modifier.weight(1f).padding(start = 13.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) { Text(name, color = White, fontSize = 16.sp); if (connected) Text("  · connected", color = Accent, fontSize = 10.sp) }
+                Text(detail, color = Muted, fontSize = 11.sp, lineHeight = 15.sp, modifier = Modifier.padding(top = 4.dp))
+            }
+            Icon(if (selected) Icons.Default.RadioButtonChecked else Icons.Default.RadioButtonUnchecked, null, tint = if (selected) Accent else Muted, modifier = Modifier.size(18.dp))
+        }
+    }
+}
+
+@Composable private fun ConnectionScreen(
+    assistant: String, endpoint: String, onEndpoint: (String) -> Unit, key: String, onKey: (String) -> Unit,
+    authHeader: String, onHeader: (String) -> Unit, status: String, error: String,
+    tools: List<McpTool>, busy: Boolean, onConnect: () -> Unit, onDisconnect: () -> Unit,
+    openDocs: (String) -> Unit, back: () -> Unit
+) {
+    val isPally = assistant == "Pally"
+    val isFo = assistant == "Fo by Wajo"
+    Column(Modifier.fillMaxSize().imePadding()) {
+        ScreenTop(assistant, "${if (isPally) "Pally" else if (isFo) "Fo by Wajo" else "MCP server"} connection", back)
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 22.dp)) {
+            if (isPally) {
+                Text("Pally MCP", color = White, fontSize = 20.sp)
+                Text("Pally's public connector uses OAuth 2.1 with PKCE. This build does not complete the browser sign-in flow, so Pally is not connected.", Modifier.padding(top = 10.dp), color = Muted, fontSize = 13.sp, lineHeight = 19.sp)
+                PillButton("open Pally connection guide", { openDocs("Pally") }, Modifier.padding(top = 14.dp))
+            } else {
+                Text(if (isFo) "connect Fo's assistant profile" else "connect a compatible MCP endpoint", color = White, fontSize = 19.sp)
                 if (isFo) {
-                    Text("$WajoFoEndpoint", color = Accent, fontSize = 13.sp, modifier = Modifier.padding(vertical = 6.dp))
+                    Text(FoEndpoint, Modifier.padding(top = 12.dp, bottom = 6.dp), color = Accent, fontSize = 12.sp)
+                    Text("Wajo documents ask_fo and get_fo_reply for this profile. This connects only to Fo, not arbitrary MCP assistants.", color = Muted, fontSize = 12.sp, lineHeight = 18.sp)
                 } else {
-                    OutlinedTextField(value = endpoint, onValueChange = onEndpoint, modifier = Modifier.fillMaxWidth(), singleLine = true, label = { Text("HTTPS MCP endpoint") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
-                    Spacer(Modifier.height(8.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Auth header", color = Dim, fontSize = 12.sp)
-                        Spacer(Modifier.width(10.dp))
-                        FilterChip(selected = credentialHeader == "X-API-Key", onClick = { onCredentialHeader("X-API-Key") }, label = { Text("X-API-Key") })
-                        Spacer(Modifier.width(6.dp))
-                        FilterChip(selected = credentialHeader == "Authorization", onClick = { onCredentialHeader("Authorization") }, label = { Text("Bearer") })
+                    OutlinedTextField(endpoint, onEndpoint, Modifier.fillMaxWidth().padding(top = 14.dp), label = { Text("HTTPS MCP endpoint") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
+                    Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("authentication", color = Muted, fontSize = 11.sp)
+                        Spacer(Modifier.width(8.dp))
+                        FilterChip(authHeader == "X-API-Key", { onHeader("X-API-Key") }, label = { Text("X-API-Key") })
+                        Spacer(Modifier.width(5.dp))
+                        FilterChip(authHeader == "Authorization", { onHeader("Authorization") }, label = { Text("Bearer") })
                     }
                 }
-                OutlinedTextField(
-                    value = credential, onValueChange = onCredential, modifier = Modifier.fillMaxWidth(), singleLine = true,
-                    label = { Text(if (isFo) "Wajo API key (wak_…)" else "Server credential (optional)") },
-                    placeholder = { Text("leave blank to reuse saved device key", color = Dim) },
-                    visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
-                )
-                Text("Credentials are encrypted with Android Keystore on this device and are not sent to this chat or included in the public source. Only use a server you trust.", Modifier.padding(top = 8.dp), color = Dim, fontSize = 11.sp, lineHeight = 16.sp)
-                Spacer(Modifier.height(14.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onConnect, enabled = !busy, modifier = Modifier.weight(1f)) { Text(if (busy) "connecting…" else "connect and inspect tools") }
-                    OutlinedButton(onClick = onDisconnect, enabled = !busy) { Text("disconnect") }
+                OutlinedTextField(key, onKey, Modifier.fillMaxWidth().padding(top = 12.dp), label = { Text(if (isFo) "Wajo API key (wak_…)" else "server credential") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
+                Text("The credential is encrypted in Android Keystore storage on this phone. Never paste it into chat or public code. Connect only to a server you trust.", Modifier.padding(top = 8.dp), color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
+                Row(Modifier.padding(top = 14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PillButton(if (busy) "connecting…" else "connect and inspect tools", onConnect, Modifier.weight(1f), enabled = !busy)
+                    OutlinedButton(onDisconnect, enabled = !busy) { Text("disconnect") }
                 }
-                Text("$status", Modifier.padding(top = 12.dp), color = if (status.startsWith("connected")) Accent else Dim, fontSize = 12.sp)
+                Text(status, Modifier.padding(top = 12.dp), color = if (status.startsWith("connected")) Accent else Muted, fontSize = 12.sp)
                 if (error.isNotBlank()) Text(error, Modifier.padding(top = 6.dp), color = Color(0xFFFFB4A8), fontSize = 12.sp, lineHeight = 17.sp)
                 if (tools.isNotEmpty()) {
-                    Spacer(Modifier.height(18.dp))
-                    Text("server-advertised tools · ${tools.size}", color = White, fontSize = 15.sp)
+                    Text("server-advertised tools · ${tools.size}", Modifier.padding(top = 20.dp, bottom = 6.dp), color = White, fontSize = 15.sp)
                     tools.take(30).forEach { tool ->
-                        Surface(Modifier.fillMaxWidth().padding(top = 7.dp), color = Card, shape = RoundedCornerShape(12.dp)) {
-                            Column(Modifier.padding(12.dp)) {
-                                Text(tool.name, color = White, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                                if (tool.description.isNotBlank()) Text(tool.description, Modifier.padding(top = 4.dp), color = Dim, fontSize = 11.sp, lineHeight = 15.sp, maxLines = 3)
-                            }
+                        Surface(Modifier.fillMaxWidth().padding(vertical = 4.dp), color = Bubble, shape = RoundedCornerShape(13.dp), border = BorderStroke(1.dp, Edge)) {
+                            Column(Modifier.padding(12.dp)) { Text(tool.name, color = White, fontSize = 13.sp, fontWeight = FontWeight.Medium); if (tool.description.isNotBlank()) Text(tool.description, Modifier.padding(top = 4.dp), color = Muted, fontSize = 11.sp, lineHeight = 15.sp, maxLines = 3) }
                         }
                     }
-                    Text("This build lists tools but does not run arbitrary MCP tools. Tool invocation needs schema-aware review and an explicit approval step.", Modifier.padding(top = 12.dp), color = Dim, fontSize = 11.sp, lineHeight = 16.sp)
+                    Text("Generic MCP tools are listed for inspection only. This build does not call arbitrary tools or claim universal task support.", Modifier.padding(top = 8.dp), color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
                 }
-                if (isFo) Text("Wajo describes Fo as able to act through the owner's Wajo account. Use Fo's own approvals for any real-world action. This preview does not provide native message reactions.", Modifier.padding(top = 14.dp), color = Dim, fontSize = 11.sp, lineHeight = 16.sp)
             }
         }
-        Spacer(Modifier.height(28.dp))
+        if (!isPally) PillButton("back to assistants", back, Modifier.padding(horizontal = 20.dp, vertical = 14.dp))
     }
 }
 
-@Composable private fun Preferences(
-    motion: Boolean, onMotion: (Boolean) -> Unit, savedGeminiKey: Boolean,
-    onSaveGeminiKey: (String) -> Unit, onClearGeminiKey: () -> Unit,
-    onBack: () -> Unit, onPreview: (AgentState) -> Unit
-) {
-    var geminiKey by remember { mutableStateOf("") }
-    var savedLabel by remember { mutableStateOf(if (savedGeminiKey) "A key is encrypted on this device." else "No Gemini key saved.") }
-    Column(Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp)) {
-        ScreenHeader("preferences", onBack)
-        Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) { Text("assistant animations", Modifier.weight(1f), color = White); Switch(checked = motion, onCheckedChange = onMotion) }
-        RowCard("preview thinking", "See the Pally mark's thinking animation") { onPreview(AgentState.THINKING) }
-        RowCard("preview searching", "See the Pally mark's searching animation") { onPreview(AgentState.SEARCHING) }
-        Spacer(Modifier.height(20.dp))
-        Text("Gemini Live key", color = White, fontSize = 19.sp)
-        Text("Optional local key storage only. This build does not connect Live audio yet. Google recommends short-lived ephemeral tokens from your own authenticated backend for a production mobile client; long-lived keys in client apps can be extracted.", Modifier.padding(vertical = 9.dp), color = Dim, fontSize = 12.sp, lineHeight = 18.sp)
-        OutlinedTextField(value = geminiKey, onValueChange = { geminiKey = it }, modifier = Modifier.fillMaxWidth(), singleLine = true, label = { Text("Gemini API key") }, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
-        Text(savedLabel, Modifier.padding(top = 7.dp), color = Dim, fontSize = 11.sp)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 10.dp)) {
-            Button(onClick = { if (geminiKey.isNotBlank()) { onSaveGeminiKey(geminiKey); geminiKey = ""; savedLabel = "Key encrypted on this device. Live voice is not active." } }, enabled = geminiKey.isNotBlank()) { Text("save on device") }
-            OutlinedButton(onClick = { onClearGeminiKey(); geminiKey = ""; savedLabel = "Saved key erased." }) { Text("erase key") }
+@Composable private fun SettingsScreen(motion: Boolean, onMotion: (Boolean) -> Unit, savedKey: Boolean, saveKey: (String) -> Unit, clearKey: () -> Unit, back: () -> Unit, preview: (AgentMode) -> Unit) {
+    var key by remember { mutableStateOf("") }
+    var label by remember(savedKey) { mutableStateOf(if (savedKey) "Gemini key saved encrypted on this device" else "No Gemini key saved") }
+    Column(Modifier.fillMaxSize().imePadding()) {
+        ScreenTop("Pally", "preferences", back)
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 22.dp)) {
+            Text("appearance", color = Muted, fontSize = 11.sp)
+            Row(Modifier.fillMaxWidth().padding(vertical = 15.dp), verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("assistant motion", color = White, fontSize = 15.sp); Text("animate the Pally mark while working", color = Muted, fontSize = 11.sp) }; Switch(motion, onMotion) }
+            MenuRow(Icons.Default.AutoAwesome, "preview thinking", "see the animated assistant mark", { preview(AgentMode.THINKING) })
+            MenuRow(Icons.Default.Search, "preview searching", "see the search state", { preview(AgentMode.SEARCHING) })
+            HorizontalDivider(Modifier.padding(vertical = 10.dp), color = Edge)
+            Text("Gemini Live voice", color = White, fontSize = 19.sp)
+            Text("Optional API-key field for local setup. This build does not connect Live audio. For production, Google recommends short-lived ephemeral tokens issued by an authenticated backend.", Modifier.padding(top = 8.dp, bottom = 10.dp), color = Muted, fontSize = 12.sp, lineHeight = 18.sp)
+            OutlinedTextField(key, { key = it }, Modifier.fillMaxWidth(), label = { Text("Gemini API key") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
+            Text(label, Modifier.padding(top = 7.dp), color = Muted, fontSize = 11.sp)
+            Row(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                PillButton("save on this device", { if (key.isNotBlank()) { saveKey(key.trim()); key = ""; label = "Gemini key saved encrypted on this device" } }, Modifier.weight(1f), enabled = key.isNotBlank())
+                OutlinedButton(onClick = { clearKey(); key = ""; label = "Saved key erased" }) { Text("erase") }
+            }
         }
-        Text("No Gemini connection, API requests, or microphone audio are implemented yet.", Modifier.padding(top = 10.dp), color = Dim, fontSize = 11.sp)
+        PillButton("done", back, Modifier.padding(horizontal = 20.dp, vertical = 14.dp))
     }
 }
 
-@Composable private fun Voice(motion: Boolean, onSettings: () -> Unit, onBack: () -> Unit) {
+@Composable private fun VoiceScreen(motion: Boolean, keySaved: Boolean, settings: () -> Unit, back: () -> Unit) {
     val transition = rememberInfiniteTransition(label = "voice orb")
-    val progress by transition.animateFloat(0f, 1f, infiniteRepeatable(tween(4200, easing = LinearEasing)), label = "orb phase")
-    Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            TextButton(onClick = onSettings) { Text("Gemini Live setup", color = Accent) }
-            CircleControl(Icons.Default.Close, "Close voice", onBack)
+    val phase by transition.animateFloat(0f, 1f, infiniteRepeatable(tween(4800, easing = LinearEasing)), label = "orb phase")
+    Column(Modifier.fillMaxSize().padding(horizontal = 22.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Row(Modifier.fillMaxWidth().padding(top = 14.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = settings) { Text("Gemini Live setup", color = Accent) }
+            CircleButton(Icons.Default.Close, "Close voice", back)
         }
         Spacer(Modifier.weight(1f))
-        Canvas(Modifier.size(240.dp).semantics { contentDescription = "Animated voice orb preview" }) {
-            val p = if (motion) progress else 0f
-            val cx = size.width / 2; val cy = size.height / 2; val radius = size.minDimension * .36f
+        Canvas(Modifier.size(250.dp).semantics { contentDescription = "Animated voice orb preview" }) {
+            val p = if (motion) phase else 0f
+            val cx = size.width / 2; val cy = size.height / 2; val base = size.minDimension * .36f
             val path = Path()
-            for (i in 0..120) {
-                val a = i * 2.0 * Math.PI / 120.0
-                val r = radius * (1f + .055f * sin((a * 3.0 + p * 2.0 * Math.PI)).toFloat() + .027f * cos((a * 5.0 - p * 2.0 * Math.PI)).toFloat())
+            for (i in 0..160) {
+                val a = i * 2.0 * Math.PI / 160.0
+                val r = base * (1f + .07f * sin(a * 3.0 + p * 2 * Math.PI).toFloat() + .035f * cos(a * 5.0 - p * 2 * Math.PI).toFloat())
                 val x = cx + r * cos(a).toFloat(); val y = cy + r * sin(a).toFloat()
                 if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
             }
             path.close()
-            drawPath(path, Brush.radialGradient(listOf(Color(0xFFD5E3E1), Color(0xFF647F87), Color(0xFF2B3941)), center = Offset(cx * .7f, cy * .7f), radius = radius * 2f))
-            drawPath(path, Color.White.copy(alpha = .28f), style = Stroke(1.dp.toPx()))
+            drawCircle(Color(0xFF344047).copy(alpha = .5f), radius = base * 1.25f, center = Offset(cx, cy))
+            drawPath(path, Brush.radialGradient(listOf(Color(0xFFECF5EF), Color(0xFF98B5B6), Color(0xFF536D79), Color(0xFF26323A)), center = Offset(cx * .72f, cy * .70f), radius = base * 2f))
+            drawPath(path, Color.White.copy(alpha = .38f), style = Stroke(1.2.dp.toPx()))
         }
-        Spacer(Modifier.height(32.dp))
-        Text("voice preview", fontSize = 22.sp, color = White)
-        Text("The orb animates, but microphone audio and Gemini Live are not connected in this build.", Modifier.padding(top = 10.dp), fontSize = 13.sp, lineHeight = 19.sp, color = Dim, textAlign = TextAlign.Center)
+        Spacer(Modifier.height(34.dp))
+        Text("voice", color = White, fontSize = 24.sp)
+        Text(if (keySaved) "Gemini key is stored locally, but live audio is not connected in this build." else "connect Gemini Live in preferences to continue", Modifier.padding(top = 10.dp), color = Muted, fontSize = 13.sp, lineHeight = 19.sp, textAlign = TextAlign.Center)
+        Text("microphone and call session are preview-only", Modifier.padding(top = 6.dp), color = Muted.copy(alpha = .75f), fontSize = 11.sp)
         Spacer(Modifier.weight(1f))
-        OutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) { Text("close") }
+        PillButton("close", back, Modifier.padding(bottom = 20.dp))
     }
+}
+
+@Composable private fun PillButton(label: String, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
+    Surface(onClick = onClick, enabled = enabled, modifier = modifier.fillMaxWidth().heightIn(min = 46.dp), shape = RoundedCornerShape(26.dp), color = Color(0xFF2C2A28), border = BorderStroke(1.dp, Edge)) {
+        Box(contentAlignment = Alignment.Center) { Text(label, color = if (enabled) White else Muted, fontSize = 13.sp) }
+    }
+}
+
+@Composable private fun AttachmentSheet(onDismiss: () -> Unit, onPick: (String) -> Unit) {
+    AlertDialog(onDismissRequest = onDismiss, containerColor = Bubble,
+        title = { Text("add to message", color = White) },
+        text = { Column { listOf("camera" to Icons.Default.CameraAlt, "photos" to Icons.Default.Image, "files" to Icons.Default.InsertDriveFile, "location" to Icons.Default.LocationOn).forEach { (name, icon) ->
+            Row(Modifier.fillMaxWidth().clickable { onPick(name) }.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) { Icon(icon, null, tint = Muted, modifier = Modifier.size(21.dp)); Text(name, Modifier.padding(start = 12.dp), color = White, fontSize = 14.sp) }
+            HorizontalDivider(color = Edge.copy(alpha = .45f))
+        } } }, confirmButton = { TextButton(onClick = onDismiss) { Text("close", color = Accent) } })
+}
+
+@Composable private fun EmojiSheet(onDismiss: () -> Unit, onPick: (String) -> Unit) {
+    AlertDialog(onDismissRequest = onDismiss, containerColor = Bubble, title = { Text("choose emoji", color = White) },
+        text = { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) { listOf("😊", "👍", "❤️", "✨", "🙏").forEach { Text(it, Modifier.clickable { onPick(it) }.padding(7.dp), fontSize = 24.sp) } } },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("close", color = Accent) } })
 }

@@ -1,34 +1,36 @@
 # Android agent preview
 
-This is an unofficial, work-in-progress Kotlin and Jetpack Compose Android app. It is not a production-ready agent client.
+Unofficial Kotlin and Jetpack Compose Android prototype. This is a debug build, not a production-ready agent app.
 
-## Implemented in the current source
+## Current features
 
-- A dark Compose chat UI with faint horizontal scanlines, Pally mark, assistant selection, work drawer and animated voice-orb preview.
-- A small HTTPS Streamable HTTP MCP client that initializes a server and lists its advertised tools.
-- A Fo by Wajo adapter that looks for the documented `ask_fo` and `get_fo_reply` tools, maps message text only into a string field declared by the server's tool schema, and polls a working response. The app requires a Wajo API key entered on device. A real Wajo account connection has not been tested, so end-to-end Fo operation remains unverified.
-- Wajo and Gemini API-key fields use AES-GCM with an Android Keystore key for device-local encrypted storage.
-- A local chat preview and thinking/searching animations.
+- Dark chat screen with fading horizontal scanlines, assistant selection, a work drawer, sample conversation labelled as illustrative, long-press reply, emoji picker, and voice entry.
+- Animated Pally logo indicator and an Orbkit-inspired original Canvas orb animation. These animations are visual previews.
+- Streamable HTTP MCP client for HTTPS endpoint initialization and server-advertised tool discovery.
+- Fo by Wajo adapter for the documented `ask_fo` / `get_fo_reply` profile. It maps a message only to a schema-declared string field and refuses missing required arguments. The Wajo account flow has not been tested end to end.
+- Wajo and Gemini key fields use Android Keystore-backed AES-GCM device-local storage.
 
 ## Not implemented or not verified
 
-- Pally sign-in. The public Pally MCP connector uses OAuth 2.1 with dynamic client registration and PKCE; this app does not yet implement that flow, so Pally replies are unavailable.
-- Gemini Live sessions, microphone capture or audio playback. The Gemini key setting stores a key locally, but does not establish a Live connection. A production client should use a backend-issued short-lived token rather than ship a long-lived key.
-- Native agent reactions, sending attachments, and durable chat history.
-- Generic execution of arbitrary MCP tools. Generic servers can be inspected, but a tool server is not automatically a chat assistant and the app does not run its arbitrary tools.
-- Live provider compatibility, device installation, and usability testing.
+- Pally OAuth sign-in and live replies are not implemented. The Pally MCP page and OAuth discovery are documented, but this app does not complete OAuth 2.1 with PKCE.
+- Fo interoperation against a live Wajo account is unverified. Generic MCP servers can be inspected; arbitrary tool execution and universal assistant behavior are not supported.
+- Gemini Live sessions, microphone capture and audio playback are not implemented. The Gemini key field only saves a local key; production should use backend-issued short-lived tokens.
+- Native agent reactions, attachment sending, and durable chat history are not implemented.
+- No phone installation or usability testing has been performed. A CI build only verifies the configured compile and unit-test tasks.
 
-An MCP connection grants access only to the capabilities the server advertises. Review sensitive tool actions before execution; do not assume universal task support. The Fo message path is provider-specific and should be tested against a real Wajo account before relying on it.
+MCP capabilities vary by server. The app must not execute a tool unless it is advertised and the user has approved any sensitive action.
 
 ## Build and tests
 
-GitHub Actions uses JDK 17, Android SDK 36 and Gradle 8.13. It runs `:app:assembleDebug :app:testDebugUnitTest` and uploads a debug APK when the build succeeds. There is no Gradle wrapper yet. The workflow fetches the official Pally app icon and verifies its pinned SHA-256 before building. To build locally, install Gradle 8.13 and Android SDK 36, place the official icon at `app/src/main/res/drawable-nodpi/pally_logo.png`, verify SHA-256 `d0f46d83c54386153c12f21472166299babade7139a0dd7c7c9ea915ab7118ea`, then run `gradle :app:assembleDebug :app:testDebugUnitTest`.
+GitHub Actions uses JDK 17, Android SDK 36, and the runner-provided Gradle 9.8.2. The repository currently has no Gradle wrapper. Actions runs `gradle --no-daemon :app:assembleDebug :app:testDebugUnitTest` and uploads a debug APK artifact for 14 days. The current unit tests cover MCP message-field mapping and text extraction; they do not test UI behavior or live providers. The workflow downloads the official Pally app icon and checks its pinned SHA-256 before building.
 
-A successful Actions run proves only compilation and the tests included in that run; it does not prove provider interoperability, on-device UI quality, or production readiness. Debug APKs are development builds and are not release-signed.
+A manual workflow dispatch can optionally accept a temporary source URL for the approved chat activity. That file is accepted only from `my.pally.com` and only when its pinned SHA-256 matches. It is committed by a separate, narrowly permissioned job before the build job checks out the resulting commit. Normal pull-request builds have read-only repository permissions.
+
+For a local build, install Gradle 9.8.2 and Android SDK 36, place the official icon at `app/src/main/res/drawable-nodpi/pally_logo.png`, verify SHA-256 `d0f46d83c54386153c12f21472166299babade7139a0dd7c7c9ea915ab7118ea`, then run `gradle :app:assembleDebug :app:testDebugUnitTest`.
 
 ## Security
 
-Never commit tokens, API keys, or personal data to this public repository, and never print secrets in CI logs. Android Keystore storage protects saved local credentials, but it does not replace a backend or guarantee security on a compromised device. Disconnect and erase credentials when no longer needed.
+Never commit API keys, tokens or personal data. The device-local encrypted credential fields do not replace a secure backend or guarantee safety on a compromised phone. Do not paste keys in chat. Disconnect and erase saved credentials when no longer needed.
 
 ## References
 

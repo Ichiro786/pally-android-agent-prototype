@@ -4,13 +4,15 @@ import android.content.Context
 import android.net.Uri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.net.URI
 import java.security.MessageDigest
 import java.security.SecureRandom
-import android.util.Base64
+import java.util.Base64
 
 /** Native public-client OAuth for Pally's documented MCP endpoint. */
 object PallyOAuth {
@@ -29,8 +31,8 @@ object PallyOAuth {
     /** Registers a public client if needed, persists a one-use PKCE verifier, and returns the browser URL. */
     suspend fun begin(context: Context): String = withContext(Dispatchers.IO) {
         val metadata = discovery()
-        require(metadata.optJSONArray("response_types_supported")?.let { array -> (0 until array.length()).any { array.optString(it) == "code" } } == true) { "Pally OAuth does not advertise the authorization-code flow." }
-        require(metadata.optJSONArray("code_challenge_methods_supported")?.let { array -> (0 until array.length()).any { array.optString(it) == "S256" } } == true) { "Pally OAuth does not advertise S256 PKCE." }
+        require(metadata.optJSONArray("response_types_supported")?.containsString("code") == true) { "Pally OAuth does not advertise the authorization-code flow." }
+        require(metadata.optJSONArray("code_challenge_methods_supported")?.containsString("S256") == true) { "Pally OAuth does not advertise S256 PKCE." }
         val clientId = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(CLIENT, null)
             ?: registerClient(metadata).also { context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(CLIENT, it).apply() }
         val verifier = randomUrlToken(32)
@@ -49,14 +51,13 @@ object PallyOAuth {
             .build().toString()
     }
 
-    /** Validates the one-use state and exchanges the code; access and refresh tokens stay in the device vault. */
+    /** Validates the one-use state and exchanges the code; tokens stay in the device vault. */
     suspend fun finish(context: Context, callback: Uri): String = withContext(Dispatchers.IO) {
         if (!isRedirect(callback)) throw IllegalArgumentException("This is not the Pally sign-in callback.")
         val expected = SecretVault.read(context, STATE)
         val verifier = SecretVault.read(context, VERIFIER)
         val actual = callback.getQueryParameter("state")
-        if (expected.isNullOrBlank() || verifier.isNullOrBlank() || actual.isNullOrBlank() ||
-            !MessageDigest.isEqual(expected.toByteArray(Charsets.UTF_8), actual.toByteArray(Charsets.UTF_8))) {
+        if (expected.isNullOrBlank() || verifier.isNullOrBlank() || actual.isNullOrBlank() || !stateMatches(expected, actual)) {
             clearPending(context)
             throw IllegalStateException("Pally sign-in state did not match. Start sign-in again.")
         }
@@ -73,42 +74,32 @@ object PallyOAuth {
             val clientId = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(CLIENT, null)
                 ?: throw IllegalStateException("Pally client registration is missing. Start sign-in again.")
             val response = postForm(metadata.getString("token_endpoint"), linkedMapOf(
-                "grant_type" to "authorization_code",
-                "code" to code,
-                "redirect_uri" to REDIRECT_URI,
-                "client_id" to clientId,
-                "code_verifier" to verifier,
-                "resource" to MCP_ENDPOINT
+                "grant_type" to "authorization_code", "code" to code, "redirect_uri" to REDIRECT_URI,
+                "client_id" to clientId, "code_verifier" to verifier, "resource" to MCP_ENDPOINT
             ))
             storeTokens(context, response, null)
             SecretVault.read(context, ACCESS) ?: throw IllegalStateException("Pally returned no access token.")
-        } finally {
-            clearPending(context)
-        }
+        } finally { clearPending(context) }
     }
 
     /** Returns a valid saved access token, refreshing it when it is close to expiry. */
     suspend fun accessToken(context: Context): String? = withContext(Dispatchers.IO) {
         val access = SecretVault.read(context, ACCESS) ?: return@withContext null
-        val expiresAt = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(EXPIRES, 0L)
-        if (expiresAt > System.currentTimeMillis() + 60_000L) return@withContext access
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (prefs.getLong(EXPIRES, 0L) > System.currentTimeMillis() + 60_000L) return@withContext access
         val refresh = SecretVault.read(context, REFRESH) ?: return@withContext null
         try {
             val metadata = discovery()
-            val clientId = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(CLIENT, null)
-                ?: throw IllegalStateException("Pally client registration is missing.")
+            val clientId = prefs.getString(CLIENT, null) ?: throw IllegalStateException("Pally client registration is missing.")
             val response = postForm(metadata.getString("token_endpoint"), linkedMapOf(
-                "grant_type" to "refresh_token",
-                "refresh_token" to refresh,
-                "client_id" to clientId,
-                "resource" to MCP_ENDPOINT
+                "grant_type" to "refresh_token", "refresh_token" to refresh, "client_id" to clientId, "resource" to MCP_ENDPOINT
             ))
             storeTokens(context, response, refresh)
             SecretVault.read(context, ACCESS)
         } catch (e: Exception) {
             SecretVault.clear(context, ACCESS)
             SecretVault.clear(context, REFRESH)
-            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(EXPIRES).apply()
+            prefs.edit().remove(EXPIRES).apply()
             throw e
         }
     }
@@ -118,23 +109,31 @@ object PallyOAuth {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(EXPIRES).remove(CLIENT).apply()
     }
 
-    internal fun isRedirect(uri: Uri): Boolean = uri.scheme == "pallyagent" && uri.host == "oauth" && uri.path == "/callback"
+    internal fun isRedirect(uri: Uri): Boolean = isRedirectUri(uri.toString())
 
-    internal fun pkceChallenge(verifier: String): String =
-        Base64.encodeToString(MessageDigest.getInstance("SHA-256").digest(verifier.toByteArray(Charsets.US_ASCII)), Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+    internal fun isRedirectUri(value: String): Boolean = try {
+        val uri = URI(value)
+        uri.scheme == "pallyagent" && uri.host == "oauth" && uri.path == "/callback" && uri.rawUserInfo == null
+    } catch (_: Exception) { false }
+
+    internal fun stateMatches(expected: String, actual: String): Boolean =
+        MessageDigest.isEqual(expected.toByteArray(Charsets.UTF_8), actual.toByteArray(Charsets.UTF_8))
+
+    internal fun pkceChallenge(verifier: String): String = Base64.getUrlEncoder().withoutPadding()
+        .encodeToString(MessageDigest.getInstance("SHA-256").digest(verifier.toByteArray(Charsets.US_ASCII)))
 
     private fun randomUrlToken(size: Int): String = ByteArray(size).also { SecureRandom().nextBytes(it) }
-        .let { Base64.encodeToString(it, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING) }
+        .let { Base64.getUrlEncoder().withoutPadding().encodeToString(it) }
+
+    private fun JSONArray.containsString(value: String): Boolean = (0 until length()).any { optString(it) == value }
 
     private fun discovery(): JSONObject {
         val response = getJson(DISCOVERY)
         require(response.optString("issuer") == ISSUER) { "Pally OAuth discovery returned an unexpected issuer." }
         listOf("authorization_endpoint", "token_endpoint", "registration_endpoint").forEach { key ->
-            val endpoint = response.optString(key)
-            require(isOfficialEndpoint(endpoint)) { "Pally OAuth discovery returned an unexpected $key." }
+            require(isOfficialEndpoint(response.optString(key))) { "Pally OAuth discovery returned an unexpected $key." }
         }
-        val methods = response.optJSONArray("token_endpoint_auth_methods_supported")
-        require(methods != null && (0 until methods.length()).any { methods.optString(it) == "none" }) { "Pally OAuth does not advertise public-client authentication." }
+        require(response.optJSONArray("token_endpoint_auth_methods_supported")?.containsString("none") == true) { "Pally OAuth does not advertise public-client authentication." }
         return response
     }
 
@@ -146,14 +145,13 @@ object PallyOAuth {
     private fun registerClient(metadata: JSONObject): String {
         val body = JSONObject()
             .put("client_name", "Pally Android Agent Preview")
-            .put("redirect_uris", org.json.JSONArray().put(REDIRECT_URI))
-            .put("grant_types", org.json.JSONArray().put("authorization_code").put("refresh_token"))
-            .put("response_types", org.json.JSONArray().put("code"))
+            .put("redirect_uris", JSONArray().put(REDIRECT_URI))
+            .put("grant_types", JSONArray().put("authorization_code").put("refresh_token"))
+            .put("response_types", JSONArray().put("code"))
             .put("token_endpoint_auth_method", "none")
             .put("scope", "mcp")
-        val response = postJson(metadata.getString("registration_endpoint"), body)
-        return response.optString("client_id").takeIf { it.isNotBlank() }
-            ?: throw IllegalStateException("Pally's registration endpoint returned no client_id.")
+        return postJson(metadata.getString("registration_endpoint"), body).optString("client_id")
+            .takeIf { it.isNotBlank() } ?: throw IllegalStateException("Pally's registration endpoint returned no client_id.")
     }
 
     private fun storeTokens(context: Context, response: JSONObject, priorRefresh: String?) {
@@ -175,8 +173,8 @@ object PallyOAuth {
     }
 
     private fun getJson(endpoint: String): JSONObject = request(endpoint, "GET", null)
-
-    private fun postJson(endpoint: String, body: JSONObject): JSONObject = request(endpoint, "POST", body.toString().toByteArray(Charsets.UTF_8), "application/json")
+    private fun postJson(endpoint: String, body: JSONObject): JSONObject =
+        request(endpoint, "POST", body.toString().toByteArray(Charsets.UTF_8), "application/json")
 
     private fun postForm(endpoint: String, values: Map<String, String>): JSONObject {
         val encoded = values.entries.joinToString("&") { (key, value) -> form(key) + "=" + form(value) }

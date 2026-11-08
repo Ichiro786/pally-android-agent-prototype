@@ -8,15 +8,10 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.atomic.AtomicInteger
 
-/** A deliberately small Streamable HTTP client for HTTPS MCP endpoints. */
-data class McpTool(
-    val name: String,
-    val description: String,
-    val inputSchema: JSONObject
-)
-
+data class McpTool(val name: String, val description: String, val inputSchema: JSONObject)
 data class McpCallResult(val result: JSONObject, val isError: Boolean)
 
+/** Minimal Streamable HTTP client. Only HTTPS, server-advertised tools are accepted. */
 class McpClient(
     private val endpoint: String,
     private val credential: String,
@@ -25,36 +20,40 @@ class McpClient(
     private val ids = AtomicInteger(0)
     private var protocolVersion = "2025-11-25"
     private var sessionId: String? = null
+    @Volatile private var cachedTools: List<McpTool>? = null
 
-    suspend fun connectAndListTools(): List<McpTool> = withContext(Dispatchers.IO) {
-        val url = URL(endpoint)
-        require(url.protocol.equals("https", ignoreCase = true)) { "Use an HTTPS MCP endpoint." }
-        require(url.userInfo == null && url.host.isNotBlank()) { "Enter a valid HTTPS MCP endpoint." }
-
-        val initParams = JSONObject()
-            .put("protocolVersion", protocolVersion)
-            .put("capabilities", JSONObject())
-            .put("clientInfo", JSONObject().put("name", "Pally Android").put("version", "0.3.0"))
-        val init = request("initialize", initParams, initializing = true)
-        val initResult = init.optJSONObject("result") ?: throw protocolError(init)
-        protocolVersion = initResult.optString("protocolVersion").ifBlank { protocolVersion }
-        request("notifications/initialized", JSONObject(), notification = true)
-        val listed = request("tools/list", JSONObject())
-        val result = listed.optJSONObject("result") ?: throw protocolError(listed)
-        val tools = result.optJSONArray("tools") ?: JSONArray()
-        buildList {
-            for (i in 0 until tools.length()) {
-                val item = tools.optJSONObject(i) ?: continue
-                val name = item.optString("name").trim()
-                if (name.isNotEmpty()) add(McpTool(name, item.optString("description"), item.optJSONObject("inputSchema") ?: JSONObject()))
+    suspend fun connectAndListTools(): List<McpTool> {
+        cachedTools?.let { return it }
+        val discovered = withContext(Dispatchers.IO) {
+            val url = URL(endpoint)
+            require(url.protocol.equals("https", true)) { "Use an HTTPS MCP endpoint." }
+            require(url.userInfo == null && url.host.isNotBlank()) { "Enter a valid HTTPS MCP endpoint." }
+            val initParams = JSONObject()
+                .put("protocolVersion", protocolVersion)
+                .put("capabilities", JSONObject())
+                .put("clientInfo", JSONObject().put("name", "Pally Android").put("version", "0.3.0"))
+            val init = request("initialize", initParams, initializing = true)
+            val initResult = init.optJSONObject("result") ?: throw protocolError(init)
+            protocolVersion = initResult.optString("protocolVersion").ifBlank { protocolVersion }
+            request("notifications/initialized", JSONObject(), notification = true)
+            val listed = request("tools/list", JSONObject())
+            val result = listed.optJSONObject("result") ?: throw protocolError(listed)
+            val array = result.optJSONArray("tools") ?: JSONArray()
+            buildList {
+                for (i in 0 until array.length()) {
+                    val item = array.optJSONObject(i) ?: continue
+                    val name = item.optString("name").trim()
+                    if (name.isNotEmpty()) add(McpTool(name, item.optString("description"), item.optJSONObject("inputSchema") ?: JSONObject()))
+                }
             }
         }
+        cachedTools = discovered
+        return discovered
     }
 
     suspend fun callTool(name: String, arguments: JSONObject): McpCallResult = withContext(Dispatchers.IO) {
         require(name.isNotBlank()) { "Choose a tool reported by this server." }
-        val params = JSONObject().put("name", name).put("arguments", arguments)
-        val response = request("tools/call", params)
+        val response = request("tools/call", JSONObject().put("name", name).put("arguments", arguments))
         val result = response.optJSONObject("result") ?: throw protocolError(response)
         McpCallResult(result, result.optBoolean("isError", false))
     }
@@ -68,8 +67,7 @@ class McpClient(
         val requestId = if (notification) null else ids.incrementAndGet()
         val body = JSONObject().put("jsonrpc", "2.0").put("method", method).put("params", params)
         if (requestId != null) body.put("id", requestId)
-        val conn = URL(endpoint).openConnection() as? HttpURLConnection
-            ?: throw IllegalStateException("Could not open MCP endpoint.")
+        val conn = URL(endpoint).openConnection() as? HttpURLConnection ?: throw IllegalStateException("Could not open MCP endpoint.")
         try {
             conn.requestMethod = "POST"
             conn.connectTimeout = 20_000
@@ -86,7 +84,6 @@ class McpClient(
             }
             if (!initializing && protocolVersion.isNotBlank()) {
                 conn.setRequestProperty("MCP-Protocol-Version", protocolVersion)
-                // These standard mirrors are required by the newest Streamable HTTP revision.
                 conn.setRequestProperty("Mcp-Method", method)
                 if (method == "tools/call") conn.setRequestProperty("Mcp-Name", params.optString("name"))
             }
@@ -105,21 +102,16 @@ class McpClient(
             val response = parseJsonResponse(text, conn.contentType)
             if (response.has("error")) throw protocolError(response)
             response
-        } finally {
-            conn.disconnect()
-        }
+        } finally { conn.disconnect() }
     }
 
     private fun parseJsonResponse(text: String, contentType: String?): JSONObject {
         if (text.isBlank()) return JSONObject()
-        if (contentType?.contains("text/event-stream", ignoreCase = true) == true || text.lineSequence().any { it.startsWith("data:") }) {
-            val payloads = text.lineSequence().filter { it.startsWith("data:") }
-                .map { it.removePrefix("data:").trim() }.filter { it.isNotBlank() && it != "[DONE]" }.toList()
+        if (contentType?.contains("text/event-stream", true) == true || text.lineSequence().any { it.startsWith("data:") }) {
+            val payloads = text.lineSequence().filter { it.startsWith("data:") }.map { it.removePrefix("data:").trim() }
+                .filter { it.isNotBlank() && it != "[DONE]" }.toList()
             for (payload in payloads.asReversed()) {
-                try {
-                    val json = JSONObject(payload)
-                    if (json.has("result") || json.has("error")) return json
-                } catch (_: Exception) { }
+                try { val json = JSONObject(payload); if (json.has("result") || json.has("error")) return json } catch (_: Exception) { }
             }
             throw IllegalStateException("MCP server sent an event stream without a final JSON-RPC result.")
         }
@@ -132,56 +124,44 @@ class McpClient(
     }
 
     companion object {
-        /** Maps only a schema-declared string field to the user's chat text. */
+        /** Maps the message only when one schema-declared string can be safely supplied. */
         fun messageArguments(tool: McpTool, message: String): JSONObject {
             val properties = tool.inputSchema.optJSONObject("properties") ?: JSONObject()
             val required = tool.inputSchema.optJSONArray("required") ?: JSONArray()
-            val preferred = listOf("message", "request", "prompt", "text", "input", "query", "task")
-
-            fun canSupplyOnly(key: String): Boolean {
-                val type = properties.optJSONObject(key)?.optString("type")
-                if (type != "string") return false
-                for (i in 0 until required.length()) {
-                    if (required.optString(i) != key) return false
-                }
+            fun acceptsOnly(key: String): Boolean {
+                if (properties.optJSONObject(key)?.optString("type") != "string") return false
+                for (i in 0 until required.length()) if (required.optString(i) != key) return false
                 return true
             }
-
-            for (candidate in preferred) {
-                val key = properties.keys().asSequence().firstOrNull { it.equals(candidate, ignoreCase = true) } ?: continue
-                if (canSupplyOnly(key)) return JSONObject().put(key, message)
+            for (candidate in listOf("message", "request", "prompt", "text", "input", "query", "task")) {
+                val key = properties.keys().asSequence().firstOrNull { it.equals(candidate, true) } ?: continue
+                if (acceptsOnly(key)) return JSONObject().put(key, message)
             }
             if (required.length() == 1) {
                 val key = required.optString(0)
-                if (canSupplyOnly(key)) return JSONObject().put(key, message)
+                if (acceptsOnly(key)) return JSONObject().put(key, message)
             }
             throw IllegalStateException("This assistant's message tool has a schema this preview cannot map safely.")
         }
 
-        fun toolText(result: McpCallResult): String {
-            val structured = result.result.optJSONObject("structuredContent")
-            structured?.let { findReplyText(it)?.let { text -> return text } }
-            val content = result.result.optJSONArray("content") ?: JSONArray()
-            val texts = buildList {
+        fun toolText(call: McpCallResult): String {
+            val structured = call.result.optJSONObject("structuredContent")
+            structured?.let { findReplyText(it)?.let { value -> return value } }
+            val content = call.result.optJSONArray("content") ?: JSONArray()
+            val text = buildList {
                 for (i in 0 until content.length()) {
                     val item = content.optJSONObject(i) ?: continue
-                    if (item.optString("type") == "text") {
-                        val value = item.optString("text")
-                        if (value.isNotBlank()) add(value)
-                    }
+                    if (item.optString("type") == "text") item.optString("text").takeIf { it.isNotBlank() }?.let(::add)
                 }
-            }
-            val joined = texts.joinToString("\n").trim()
-            if (joined.isBlank()) return "The assistant returned no text."
-            val json = try { JSONObject(joined) } catch (_: Exception) { null }
-            if (json != null) return findReplyText(json) ?: joined
-            return joined
+            }.joinToString("\n").trim()
+            if (text.isBlank()) return "The assistant returned no text."
+            val json = try { JSONObject(text) } catch (_: Exception) { null }
+            return if (json != null) findReplyText(json) ?: text else text
         }
 
         private fun findReplyText(value: JSONObject): String? {
             for (key in listOf("reply", "answer", "response", "text", "message", "output")) {
-                val candidate = value.opt(key)
-                if (candidate is String && candidate.isNotBlank()) return candidate
+                (value.opt(key) as? String)?.takeIf { it.isNotBlank() }?.let { return it }
             }
             return null
         }

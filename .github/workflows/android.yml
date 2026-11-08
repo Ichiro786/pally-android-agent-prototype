@@ -37,7 +37,7 @@ jobs:
           esac
           mkdir -p app/src/main/java/com/ichiro/pallyagent
           curl --fail --location --silent --show-error "$SOURCE_URL" -o app/src/main/java/com/ichiro/pallyagent/ApprovedChatActivity.kt
-          echo '12e99f8a55b7d8b956244228506d0f3eccb383652357f5da36bccd1cc81d1cab  app/src/main/java/com/ichiro/pallyagent/ApprovedChatActivity.kt' | sha256sum --check
+          echo '40f57129a1197a591dbf153539a6dcd763e0dffbe0fd2b3cf24262cbdf85981b  app/src/main/java/com/ichiro/pallyagent/ApprovedChatActivity.kt' | sha256sum --check
       - name: Commit verified source
         id: commit
         run: |
@@ -45,7 +45,7 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add app/src/main/java/com/ichiro/pallyagent/ApprovedChatActivity.kt
           if ! git diff --cached --quiet; then
-            git commit -m 'Align chat screen with approved UI reference'
+            git commit -m 'Persist encrypted chat history per assistant'
             git push origin HEAD:main
           fi
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"

@@ -135,17 +135,25 @@ class McpClient(
         /** Maps only a schema-declared string field to the user's chat text. */
         fun messageArguments(tool: McpTool, message: String): JSONObject {
             val properties = tool.inputSchema.optJSONObject("properties") ?: JSONObject()
+            val required = tool.inputSchema.optJSONArray("required") ?: JSONArray()
             val preferred = listOf("message", "request", "prompt", "text", "input", "query", "task")
+
+            fun canSupplyOnly(key: String): Boolean {
+                val type = properties.optJSONObject(key)?.optString("type")
+                if (type != "string") return false
+                for (i in 0 until required.length()) {
+                    if (required.optString(i) != key) return false
+                }
+                return true
+            }
+
             for (candidate in preferred) {
                 val key = properties.keys().asSequence().firstOrNull { it.equals(candidate, ignoreCase = true) } ?: continue
-                val type = properties.optJSONObject(key)?.optString("type")
-                if (type.isNullOrBlank() || type == "string") return JSONObject().put(key, message)
+                if (canSupplyOnly(key)) return JSONObject().put(key, message)
             }
-            val required = tool.inputSchema.optJSONArray("required") ?: JSONArray()
             if (required.length() == 1) {
                 val key = required.optString(0)
-                val type = properties.optJSONObject(key)?.optString("type")
-                if (type == "string") return JSONObject().put(key, message)
+                if (canSupplyOnly(key)) return JSONObject().put(key, message)
             }
             throw IllegalStateException("This assistant's message tool has a schema this preview cannot map safely.")
         }

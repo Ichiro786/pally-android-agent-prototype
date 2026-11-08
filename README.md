@@ -7,7 +7,7 @@ Unofficial Kotlin and Jetpack Compose Android prototype. This is a debug build, 
 - Dark chat screen with fading horizontal scanlines, assistant selection, a work drawer, sample conversation labelled as illustrative, long-press reply, emoji picker, and voice entry.
 - Animated Pally logo indicator and an Orbkit-inspired original Canvas orb animation. These animations are visual previews.
 - Streamable HTTP MCP client for HTTPS endpoint initialization and server-advertised tool discovery.
-- Fo by Wajo adapter for the documented `ask_fo` / `get_fo_reply` profile. It maps a message only to a schema-declared string field and refuses missing required arguments. The Wajo account flow has not been tested end to end.
+- Fo by Wajo adapter for the documented `ask_fo` / `get_fo_reply` profile. It maps a message only to a schema-declared string field, maps a returned reply handle only to a compatible ID field, and refuses missing required arguments. The Wajo account flow has not been tested end to end.
 - Wajo and Gemini key fields use Android Keystore-backed AES-GCM device-local storage.
 
 ## Not implemented or not verified
@@ -22,7 +22,7 @@ MCP capabilities vary by server. The app must not execute a tool unless it is ad
 
 ## Build and tests
 
-GitHub Actions uses JDK 17, Android SDK 36, and the runner-provided Gradle 9.8.2. The repository currently has no Gradle wrapper. Actions runs `gradle --no-daemon :app:assembleDebug :app:testDebugUnitTest` and uploads a debug APK artifact for 14 days. The current unit tests cover MCP message-field mapping and text extraction; they do not test UI behavior or live providers. The workflow downloads the official Pally app icon and checks its pinned SHA-256 before building.
+GitHub Actions uses JDK 17, Android SDK 36, and the runner-provided Gradle 9.8.2. The repository currently has no Gradle wrapper. Actions runs `gradle --no-daemon :app:assembleDebug :app:testDebugUnitTest` and uploads a debug APK artifact for 14 days. Unit tests cover schema-safe message mapping, reply text extraction, Fo pending states, and safe matching of issued reply handles to the server's poll schema; they do not test UI behavior or live providers. The workflow downloads the official Pally app icon and checks its pinned SHA-256 before building.
 
 A manual workflow dispatch can optionally accept a temporary source URL for the approved chat activity. That file is accepted only from `my.pally.com` and only when its pinned SHA-256 matches. It is committed by a separate, narrowly permissioned job before the build job checks out the resulting commit. Normal pull-request builds have read-only repository permissions.
 

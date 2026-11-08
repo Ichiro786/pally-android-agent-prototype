@@ -27,7 +27,7 @@ jobs:
           packages: 'platform-tools'
           log-accepted-android-sdk-licenses: false
       - name: Install Android SDK
-        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+        run: sdkmanager 'platforms;android-37' 'build-tools;36.0.0'
       - name: Verify runner Gradle
         run: gradle --version
       - name: Fetch and verify official Pally icon

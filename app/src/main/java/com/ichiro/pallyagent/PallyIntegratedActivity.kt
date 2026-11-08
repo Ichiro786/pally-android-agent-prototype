@@ -1,13 +1,19 @@
 package com.ichiro.pallyagent
 
 import android.content.Context
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Color as AndroidColor
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -428,20 +434,56 @@ class PallyIntegratedActivity : ComponentActivity() {
 }
 
 @Composable private fun VoicePage(motion: Boolean, saved: Boolean, settings: () -> Unit, back: () -> Unit) {
+    val context = LocalContext.current
+    val main = remember { Handler(Looper.getMainLooper()) }
+    var status by remember { mutableStateOf("ready") }
+    var transcript by remember { mutableStateOf("") }
+    var session by remember { mutableStateOf<GeminiLiveSession?>(null) }
     val t = rememberInfiniteTransition(label = "voice-orb")
     val phase by t.animateFloat(0f, 1f, infiniteRepeatable(tween(4200), RepeatMode.Reverse), label = "orb")
+
+    fun startWithKey(key: String) {
+        if (key.isBlank()) { status = "add a Gemini API key in preferences"; settings(); return }
+        transcript = ""
+        status = "connecting…"
+        val live = GeminiLiveSession(key, object : GeminiLiveSession.Listener {
+            override fun onState(value: String) { main.post { status = value } }
+            override fun onTranscript(text: String, fromModel: Boolean) {
+                main.post { transcript = (transcript + if (transcript.isBlank()) "" else "\\n" + if (fromModel) "Gemini: " else "you: ") + text }
+            }
+            override fun onError(message: String) { main.post { status = "call ended"; transcript = message } }
+        })
+        session = live
+        live.start()
+    }
+
+    val microphonePermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) startWithKey(SecretVault.read(context, GEMINI_KEY).orEmpty()) else status = "microphone permission denied"
+    }
+    DisposableEffect(session) { onDispose { session?.stop() } }
+    val active = status == "listening" || status == "speaking" || status == "connecting…"
+
     Column(Modifier.fillMaxSize().padding(horizontal = 22.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) { TextButton(onClick = settings) { Text("Gemini Live setup", color = Accent) }; Control(Icons.Default.Close, "Close voice", back) }
         Spacer(Modifier.weight(1f))
-        Canvas(Modifier.size(250.dp).semantics { contentDescription = "Animated voice orb preview" }) {
-            val p = if (motion) phase else 0f; val cx = size.width / 2; val cy = size.height / 2; val r0 = size.minDimension * .36f; val path = Path()
-            for (i in 0..180) { val a = i * 2.0 * Math.PI / 180.0; val r = r0 * (1f + .07f * sin(a * 3 + p * 6.28f).toFloat() + .03f * cos(a * 5 - p * 6.28f).toFloat()); val x = cx + r * cos(a).toFloat(); val y = cy + r * sin(a).toFloat(); if (i == 0) path.moveTo(x, y) else path.lineTo(x, y) }
-            path.close(); drawCircle(Color(0xFF344047).copy(alpha = .55f), r0 * 1.25f, Offset(cx, cy)); drawPath(path, Brush.radialGradient(listOf(Color(0xFFEAF3EE), Color(0xFF9DB8B9), Color(0xFF536E79), Color(0xFF26323A)), Offset(cx * .72f, cy * .70f), r0 * 2f)); drawPath(path, Color.White.copy(alpha = .38f), style = Stroke(1.2.dp.toPx()))
+        Canvas(Modifier.size(250.dp).semantics { contentDescription = "Animated Gemini Live voice orb" }) {
+            val p = if (motion) phase else 0f; val cx = size.width / 2; val cy = size.height / 2; val base = size.minDimension * .36f
+            val pulse = if (active) .045f else .015f
+            val path = Path()
+            for (i in 0..180) { val a = i * 2.0 * Math.PI / 180.0; val r = base * (1f + (.07f + pulse) * sin(a * 3 + p * 6.28f).toFloat() + .04f * cos(a * 5 - p * 6.28f).toFloat()); val x = cx + r * cos(a).toFloat(); val y = cy + r * sin(a).toFloat(); if (i == 0) path.moveTo(x, y) else path.lineTo(x, y) }
+            path.close(); drawCircle(Color(0xFF344047).copy(alpha = if (active) .68f else .50f), base * if (active) 1.32f else 1.25f, Offset(cx, cy)); drawPath(path, Brush.radialGradient(listOf(Color(0xFFEAF3EE), Color(0xFF9DB8B9), Color(0xFF536E79), Color(0xFF26323A)), Offset(cx * .72f, cy * .70f), base * 2f)); drawPath(path, Color.White.copy(alpha = .42f), style = Stroke(1.2.dp.toPx()))
         }
-        Spacer(Modifier.height(28.dp)); Text("voice", color = White, fontSize = 24.sp)
-        Text(if (saved) "Gemini API key saved on this device. Live audio is not connected yet." else "add an optional Gemini key in preferences", Modifier.padding(top = 9.dp), color = Muted, fontSize = 13.sp, textAlign = TextAlign.Center)
-        Text("microphone capture and audio playback are not implemented", Modifier.padding(top = 6.dp), color = Muted, fontSize = 11.sp)
-        Spacer(Modifier.weight(1f)); TextButton(onClick = back, modifier = Modifier.padding(bottom = 14.dp)) { Text("close", color = Accent) }
+        Spacer(Modifier.height(26.dp)); Text("Gemini Live", color = White, fontSize = 24.sp)
+        Text(if (saved) status else "add a Gemini API key in preferences", Modifier.padding(top = 9.dp), color = Muted, fontSize = 13.sp, textAlign = TextAlign.Center)
+        if (transcript.isNotBlank()) Text(transcript, Modifier.fillMaxWidth().padding(top = 12.dp).heightIn(max = 72.dp), color = White, fontSize = 12.sp, lineHeight = 17.sp, textAlign = TextAlign.Center, maxLines = 4)
+        Text("audio streams directly to Google; the app runs no MCP tools in this call", Modifier.padding(top = 7.dp), color = Muted.copy(alpha = .76f), fontSize = 10.sp, textAlign = TextAlign.Center)
+        Spacer(Modifier.weight(1f))
+        Button(onClick = {
+            if (session != null) { session?.stop(); session = null; status = "call ended" }
+            else if (!saved) { status = "add a Gemini API key in preferences"; settings() }
+            else if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
+            else startWithKey(SecretVault.read(context, GEMINI_KEY).orEmpty())
+        }, modifier = Modifier.fillMaxWidth().padding(bottom = 14.dp)) { Text(if (session != null) "end voice call" else "start voice call") }
     }
 }
 
@@ -452,7 +494,7 @@ class PallyIntegratedActivity : ComponentActivity() {
         Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(androidx.compose.foundation.rememberScrollState())) {
             Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("assistant motion", color = White); Text("animate Pally thinking and search states", color = Muted, fontSize = 11.sp) }; Switch(motion, setMotion) }
             Text("Gemini Live setup", Modifier.padding(top = 10.dp), color = White, fontSize = 18.sp)
-            Text("This key is encrypted on the device. A backend-issued short-lived token is safer for production. Live session, mic capture and audio playback are not wired in this preview.", Modifier.padding(vertical = 9.dp), color = Muted, fontSize = 12.sp, lineHeight = 18.sp)
+            Text("This prototype uses the saved key directly to open a Gemini Live WebSocket. Device-side API keys can be extracted, so use a test key only; for production, have an authenticated backend issue a short-lived ephemeral token. The microphone is requested only when you start a call.", Modifier.padding(vertical = 9.dp), color = Muted, fontSize = 12.sp, lineHeight = 18.sp)
             OutlinedTextField(key, { key = it }, Modifier.fillMaxWidth(), label = { Text("Gemini API key") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
             Text(if (saved) "key saved encrypted on this device" else "no key saved", Modifier.padding(top = 7.dp), color = Muted, fontSize = 11.sp)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { OutlinedButton(onClick = { if (key.isNotBlank()) { save(key.trim()); key = "" } }, enabled = key.isNotBlank()) { Text("save on this device") }; OutlinedButton(onClick = { erase(); key = "" }) { Text("erase") } }

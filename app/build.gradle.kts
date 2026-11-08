@@ -42,6 +42,7 @@ dependencies {
 
     implementation("io.modelcontextprotocol:kotlin-sdk-client:0.16.0")
     implementation("io.ktor:ktor-client-android:3.2.3")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")

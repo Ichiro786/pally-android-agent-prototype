@@ -42,7 +42,6 @@ dependencies {
 
     implementation("io.modelcontextprotocol:kotlin-sdk-client:0.16.0")
     implementation("io.ktor:ktor-client-android:3.2.3")
-    implementation("io.ktor:ktor-client-sse:3.2.3")
 
     testImplementation("junit:junit:4.13.2")
     debugImplementation("androidx.compose.ui:ui-tooling")

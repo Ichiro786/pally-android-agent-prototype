@@ -1,41 +1,48 @@
-# Android agent preview
+# Pally Android agent preview
 
-Unofficial Kotlin and Jetpack Compose Android prototype. This is an experimental debug build, not a production-ready agent app.
+Unofficial Kotlin and Jetpack Compose Android prototype. This is a debug preview, not a production-ready agent app.
 
-## Implemented in source
+## Current implementation
 
-- Dark chat UI with subtle fading horizontal scanlines, assistant selection, work drawer, long-press reply, emoji picker, an animated Pally mark and a morphing voice-orb preview.
-- Pally OAuth 2.1 public-client flow using dynamic registration and S256 PKCE, callback-state validation, encrypted device token storage and refresh. The launcher now routes OAuth callbacks into the chat. The Pally adapter calls only advertised `message_pally` and `check_pally` tools.
-- Fo by Wajo adapter for its documented `/fo` profile, using `ask_fo` and `get_fo_reply`, only schema-declared message arguments and server-issued reply handles.
-- Chat history and saved Wajo/Gemini credentials encrypted on device with AES-GCM and an Android Keystore key.
-- Generic HTTPS MCP tool discovery. Generic MCP servers are not treated as conversational assistants and arbitrary tools are not executed.
+- Dark chat UI with subtle fading horizontal scanlines, assistant picker and work drawer, animated Pally mark, morphing voice orb, reply quoting, emoji input and local encrypted conversation history. The Wajo/Fo header uses a text label because a verified Wajo logo asset is not included.
+- Pally OAuth 2.1 public-client flow: dynamic client registration, S256 PKCE, exact callback validation, encrypted device token storage and refresh. The Pally adapter calls the advertised `message_pally` tool. The flow has unit tests, but sign-in and chat have not been tested with a Pally account.
+- Fo by Wajo adapter for the documented `/fo` profile. It maps `ask_fo` arguments only when the server schema makes a safe mapping and polls `get_fo_reply` using server-issued handles. A Wajo API key must be entered on the device. No live Wajo account connection has been tested.
+- Generic HTTPS MCP tool discovery over Streamable HTTP. A generic MCP server is not automatically a conversational assistant; the app lists capabilities and does not execute arbitrary tools.
+- Up to 200 messages per assistant are stored encrypted using an Android Keystore-backed AES-GCM vault. Illustrative first-run messages are excluded from saved history.
+- Optional Gemini Live voice path with a morphing orb, runtime microphone permission, direct WebSocket audio session, 16 kHz PCM input and 24 kHz PCM output. It uses the saved device-side Gemini API key. Protocol payload tests pass, but a real Gemini call and device audio have not been tested.
 
-The OAuth wiring is in the latest source commit. The current Actions build is still running; a successful compile after this change and account-level sign-in have not yet been verified. The Fo connection has not been tested with a live Wajo account.
+## Verified build
 
-## Not implemented
+GitHub Actions run 49 completed successfully on November 8, 2026. Its `Compile debug APK and run unit tests` step and APK upload both passed. The test suite checks Fo pending-reply and handle mapping, Gemini Live message encoding, MCP safe argument/reply mapping, and Pally PKCE/callback validation. These tests do not verify provider-account authentication, live network interoperability, audio hardware or UI behavior. The APK has not been tested on a phone.
 
-- Gemini Live WebSocket sessions, microphone capture, audio playback and production ephemeral-token provisioning. The preferences screen can save a user-supplied Gemini key encrypted on the device, but it is not used for a Live call. Google's Live documentation recommends backend-issued ephemeral tokens for production clients.
-- Native agent reactions. MCP does not itself provide message reactions; no supported reaction capability has been verified for these adapters.
-- Attachment upload or sending. The UI explains this limitation; provider attachment contracts are not implemented.
-- Phone installation or usability testing.
+Download the `android-debug-apk` artifact from the run page: https://github.com/Ichiro786/pally-android-agent-prototype/actions/runs/42480707156. GitHub artifacts expire after 14 days.
 
-## Build and tests
+## Not implemented / limits
 
-GitHub Actions uses JDK 17 and Android SDK 36 to run `:app:assembleDebug` and `:app:testDebugUnitTest`, then uploads a debug APK artifact for 14 days. The runner provides Gradle 9.8.2; the repository does not currently include a Gradle wrapper. Unit tests cover schema-safe MCP argument mapping, Fo pending states and reply-handle matching, and Pally OAuth PKCE/callback validation. They do not test live provider accounts, audio, or UI behavior.
+- Native agent reactions are not implemented. MCP does not define a standard message-reaction operation, and no supported reaction contract has been verified for the connected Pally or Fo profiles. The UI must not show a fake native reaction.
+- Attachment upload/send is not implemented. The connected providers' verified interfaces in this app do not provide an attachment-send flow; the attachment UI explains that files are not uploaded.
+- Production Gemini ephemeral-token provisioning is not included because this repository has no authenticated backend. The local key option is for personal testing only; a device-stored API key can be extracted. Google recommends short-lived ephemeral tokens for direct client connections in production.
+- Installation, account sign-in, live Fo/Pally replies, Gemini audio and usability have not been tested on a phone.
 
-For local builds, install Gradle 9.8.2 and Android SDK 36, place the verified Pally icon at `app/src/main/res/drawable-nodpi/pally_logo.png`, then run `gradle :app:assembleDebug :app:testDebugUnitTest`.
+## Build
 
-## Security and limits
+GitHub Actions uses JDK 17 and Android SDK 36, then runs `:app:assembleDebug` and `:app:testDebugUnitTest`. Actions uses its preinstalled Gradle 9.8.2; the repository does not yet include a Gradle wrapper. For a local build, install JDK 17, Android SDK 36 and Gradle 9.8.2, then run:
 
-Never commit API keys, OAuth tokens or personal data. OAuth and provider keys are stored encrypted on this device, but local encryption does not make a long-lived mobile API key safe for production or guarantee protection on a compromised phone. Use a backend-issued short-lived Gemini Live token for production. Disconnect and erase saved credentials when no longer needed. MCP tool support varies by server; a successful discovery does not imply universal task support.
+```sh
+gradle :app:assembleDebug :app:testDebugUnitTest
+```
+
+## Security
+
+Never commit API keys, OAuth tokens or personal data. Pally tokens, Wajo credentials, Gemini keys and chat history are stored in encrypted Android Keystore-backed storage on the device. Local encryption does not make a long-lived API key production-safe or guarantee protection on a compromised phone. Use a backend-issued ephemeral Gemini token for production. Connect only to trusted MCP endpoints and review server-advertised capabilities.
 
 ## References
 
-- https://pally.com/mcp
-- https://agent.pally.com/.well-known/oauth-authorization-server
-- https://wajo.ai/docs/mcp-server.md
-- https://wajo.ai/docs/mcp-tools.md
-- https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http
-- https://ai.google.dev/gemini-api/docs/live-api
-- https://ai.google.dev/gemini-api/docs/live-api/ephemeral-tokens
-- https://orbkit.zzzzshawn.cloud/getting-started/usage
+- Pally MCP: https://pally.com/mcp
+- Pally OAuth metadata: https://agent.pally.com/.well-known/oauth-authorization-server
+- Wajo MCP server: https://wajo.ai/docs/mcp-server.md
+- Wajo MCP tools: https://wajo.ai/docs/mcp-tools.md
+- MCP Streamable HTTP: https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http
+- Gemini Live API: https://ai.google.dev/gemini-api/docs/live-api
+- Gemini ephemeral tokens: https://ai.google.dev/gemini-api/docs/live-api/ephemeral-tokens
+- Orbkit usage guide: https://orbkit.zzzzshawn.cloud/getting-started/usage

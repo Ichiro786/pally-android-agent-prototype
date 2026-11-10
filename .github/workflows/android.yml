@@ -7,7 +7,11 @@ on:
   workflow_dispatch:
     inputs:
       approved_chat_source:
-        description: 'Temporary HTTPS URL for the approved chat activity source (SHA-256 pinned in this workflow)'
+        description: 'Temporary Pally file URL for the approved PallyIntegratedActivity.kt source'
+        required: false
+        type: string
+      approved_chat_sha256:
+        description: 'SHA-256 of the exact source file bytes'
         required: false
         type: string
 
@@ -27,25 +31,28 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: main
-      - name: Fetch and verify approved launcher source
+      - name: Fetch and verify approved chat source
         env:
           SOURCE_URL: ${{ inputs.approved_chat_source }}
+          SOURCE_SHA256: ${{ inputs.approved_chat_sha256 }}
+        shell: bash
         run: |
           case "$SOURCE_URL" in
             https://my.pally.com/f/*\?download=1) ;;
-            *) echo "Only the temporary my.pally.com download URL is accepted"; exit 1 ;;
+            *) echo "Only a temporary my.pally.com file URL is accepted"; exit 1 ;;
           esac
+          [[ "$SOURCE_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "A lowercase SHA-256 checksum is required"; exit 1; }
           mkdir -p app/src/main/java/com/ichiro/pallyagent
-          curl --fail --location --silent --show-error "$SOURCE_URL" -o app/src/main/java/com/ichiro/pallyagent/ApprovedChatActivity.kt
-          echo '40f57129a1197a591dbf153539a6dcd763e0dffbe0fd2b3cf24262cbdf85981b  app/src/main/java/com/ichiro/pallyagent/ApprovedChatActivity.kt' | sha256sum --check
+          curl --fail --location --silent --show-error --max-time 90 "$SOURCE_URL" -o app/src/main/java/com/ichiro/pallyagent/PallyIntegratedActivity.kt
+          printf '%s  %s\n' "$SOURCE_SHA256" app/src/main/java/com/ichiro/pallyagent/PallyIntegratedActivity.kt | sha256sum --check
       - name: Commit verified source
         id: commit
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add app/src/main/java/com/ichiro/pallyagent/ApprovedChatActivity.kt
+          git add app/src/main/java/com/ichiro/pallyagent/PallyIntegratedActivity.kt
           if ! git diff --cached --quiet; then
-            git commit -m 'Persist encrypted chat history per assistant'
+            git commit -m 'Polish Compose chat screen to match approved illustration'
             git push origin HEAD:main
           fi
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"

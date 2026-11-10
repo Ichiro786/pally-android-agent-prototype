@@ -1,23 +1,33 @@
 package com.ichiro.pallyagent
 
+import kotlinx.coroutines.delay
 import org.json.JSONArray
 import org.json.JSONObject
 
 /** Uses only the Fo tools and arguments actually advertised by Wajo's MCP server. */
 object FoAdapter {
-    suspend fun send(client: McpClient, tools: List<McpTool>, message: String): String {
+    suspend fun send(
+        client: McpClient,
+        tools: List<McpTool>,
+        message: String,
+        onStage: (ReplyStage) -> Unit = {}
+    ): String {
         val ask = tools.firstOrNull { it.name == "ask_fo" }
             ?: throw IllegalStateException("The connected MCP profile does not expose ask_fo, so it is not the Fo profile.")
+        onStage(ReplyStage.SENT)
         var call = client.callTool(ask.name, McpClient.messageArguments(ask, message))
         requireSuccessful(call)
 
-        repeat(3) {
+        // Same cadence as PallyAdapter: wait between polls instead of hammering get_fo_reply back to back.
+        repeat(10) {
             val payload = payload(call)
             if (!isWorking(payload)) return McpClient.toolText(call)
+            onStage(ReplyStage.WORKING)
             val pollTool = tools.firstOrNull { it.name == "get_fo_reply" }
                 ?: return "Fo accepted the request and is still working, but this server did not expose get_fo_reply."
             val args = pollingArguments(pollTool, payload)
                 ?: return "Fo accepted the request and is still working. The reply handle could not be mapped safely to the poll tool's schema."
+            delay(900)
             call = client.callTool(pollTool.name, args)
             requireSuccessful(call)
         }

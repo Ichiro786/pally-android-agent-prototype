@@ -6,14 +6,22 @@ import org.json.JSONObject
 
 /** Implements only the two conversational tools Pally documents. */
 object PallyAdapter {
-    suspend fun send(client: McpClient, tools: List<McpTool>, message: String): String {
+    suspend fun send(
+        client: McpClient,
+        tools: List<McpTool>,
+        message: String,
+        onStage: (ReplyStage) -> Unit = {}
+    ): String {
         val sendTool = tools.firstOrNull { it.name == "message_pally" }
             ?: throw IllegalStateException("Pally did not advertise message_pally.")
+        onStage(ReplyStage.SENT)
         var call = client.callTool(sendTool.name, McpClient.messageArguments(sendTool, message))
         ensureSuccess(call)
         repeat(10) {
             val payload = payload(call)
             if (!isPending(payload)) return McpClient.toolText(call)
+            // Report only what the server said: "searching" appears only when its status says so.
+            onStage(if (isSearching(payload)) ReplyStage.SEARCHING else ReplyStage.WORKING)
             val pollTool = tools.firstOrNull { it.name == "check_pally" }
                 ?: return "Pally accepted the message and is still working, but did not advertise check_pally."
             val arguments = pollingArguments(pollTool, payload)
@@ -29,7 +37,13 @@ object PallyAdapter {
     internal fun isPending(payload: JSONObject?): Boolean {
         if (payload == null) return false
         val status = payload.optString("status").ifBlank { payload.optString("state") }.lowercase()
-        return status in setOf("pending", "working", "queued", "processing", "accepted")
+        return status in setOf("pending", "working", "queued", "processing", "accepted", "searching")
+    }
+
+    internal fun isSearching(payload: JSONObject?): Boolean {
+        if (payload == null) return false
+        val status = payload.optString("status").ifBlank { payload.optString("state") }.lowercase()
+        return status == "searching"
     }
 
     /** Maps only issued handle values to same-named string fields accepted by check_pally. */

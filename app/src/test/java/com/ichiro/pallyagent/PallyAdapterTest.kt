@@ -43,5 +43,13 @@ class PallyAdapterTest {
         assertFalse(PallyAdapter.isPending(null))
     }
 
+    @Test fun searchingIsPendingAndReportedOnlyWhenTheServerSaysSo() {
+        val searching = JSONObject("""{"status":"searching"}""")
+        assertTrue(PallyAdapter.isPending(searching))
+        assertTrue(PallyAdapter.isSearching(searching))
+        assertFalse(PallyAdapter.isSearching(JSONObject("""{"status":"working"}""")))
+        assertFalse(PallyAdapter.isSearching(null))
+    }
+
     private fun tool(name: String, schema: String) = McpTool(name, "test", JSONObject(schema))
 }

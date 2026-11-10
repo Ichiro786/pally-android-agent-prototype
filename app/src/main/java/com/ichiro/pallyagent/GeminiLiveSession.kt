@@ -59,7 +59,7 @@ internal class GeminiLiveSession(
     private val stopped = AtomicBoolean(false)
 
     fun start() {
-        require(apiKey.isNotBlank()) { "Add a Gemini API key in preferences." }
+        require(apiKey.isNotBlank()) { "Add a Gemini API key in voice setup." }
         val url = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${android.net.Uri.encode(apiKey)}"
         listener.onState("connecting…")
         val request = Request.Builder().url(url).build()

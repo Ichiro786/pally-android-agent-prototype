@@ -11,7 +11,13 @@ Unofficial Kotlin and Jetpack Compose Android prototype. This is a debug preview
 - Up to 200 messages per assistant are stored encrypted using an Android Keystore-backed AES-GCM vault. Illustrative first-run messages are excluded from saved history.
 - Optional Gemini Live voice path with a morphing orb, runtime microphone permission, direct WebSocket audio session, 16 kHz PCM input and 24 kHz PCM output. It uses the saved device-side Gemini API key. Protocol payload tests pass, but a real Gemini call and device audio have not been tested.
 
-## Verified build
+## Design rebuild (not yet built by CI or run on a device)
+
+The screens were rebuilt from the approved illustrations: chat thread, thinking card, assistants, MCP setup, review access, preferences, work drawer and attachments sheet. The thinking state shows only real request stages (sent, waiting for the reply). The searching state appears only when the server reports a `searching` status. Attachment options are shown as unavailable, reactions are not shown, and review access lists the server's advertised tools read-only.
+
+Local checks: the Kotlin 2.4.10 compiler, with Compose 1.11, Material 3 1.4 and the Android framework jar, reports no errors in the changed UI and adapter sources except the generated `R` class, which the CI logo step provides. `GeminiLiveSession.kt` was not checked against OkHttp, which is not on this machine's classpath. The adapter and MCP mapping unit tests pass on the JVM (17 tests). Gradle, the APK, and on-device rendering have not been run since this rebuild.
+
+## Verified build (previous revision)
 
 GitHub Actions run 49 completed successfully on November 8, 2026. Its `Compile debug APK and run unit tests` step and APK upload both passed. The test suite checks Fo pending-reply and handle mapping, Gemini Live message encoding, MCP safe argument/reply mapping, and Pally PKCE/callback validation. These tests do not verify provider-account authentication, live network interoperability, audio hardware or UI behavior. The APK has not been tested on a phone.
 

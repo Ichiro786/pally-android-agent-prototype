@@ -40,6 +40,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.EmojiEmotions
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -295,6 +296,7 @@ private fun IntegratedApp() {
 
     Box(Modifier.fillMaxSize().background(Ink)) {
         Scanlines(Modifier.matchParentSize())
+        Box(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
         when (page) {
             Page.CHAT -> ChatPage(
                 assistant, connected, lines, draft, { draft = it }, busy, searching, motion, note,
@@ -323,25 +325,24 @@ private fun IntegratedApp() {
         if (page == Page.CHAT && drawer) WorkDrawer(
             close = { drawer = false }, assistants = { drawer = false; page = Page.ASSISTANTS }, settings = { drawer = false; page = Page.SETTINGS }
         )
-        if (page == Page.CHAT && sheet.isNotBlank()) {
-            if (sheet == "emoji") AlertDialog(
-                onDismissRequest = { sheet = "" }, containerColor = Bubble,
-                title = { Text("choose emoji", color = White) },
-                text = { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
-                    listOf("😊", "👍", "❤️", "✨", "🙏").forEach { Text(it, Modifier.clickable { draft += it; sheet = "" }.padding(7.dp), fontSize = 24.sp) }
-                } }, confirmButton = { TextButton(onClick = { sheet = "" }) { Text("close", color = Accent) } }
-            ) else AlertDialog(
-                onDismissRequest = { sheet = "" }, containerColor = Bubble, title = { Text("attachments", color = White) },
-                text = { Text("The selected MCP provider has no verified attachment-send contract in this app, so files are not uploaded.", color = Muted) },
-                confirmButton = { TextButton(onClick = { sheet = "" }) { Text("close", color = Accent) } }
-            )
+        if (page == Page.CHAT && sheet == "attachments") AlertDialog(
+            onDismissRequest = { sheet = "" }, containerColor = Bubble, title = { Text("attachments", color = White) },
+            text = { Text("The selected MCP provider has no verified attachment-send contract in this app, so files are not uploaded.", color = Muted) },
+            confirmButton = { TextButton(onClick = { sheet = "" }) { Text("close", color = Accent) } }
+        )
+        if (page == Page.CHAT && sheet == "emoji") AlertDialog(
+            onDismissRequest = { sheet = "" }, containerColor = Bubble, title = { Text("choose emoji", color = White) },
+            text = { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
+                listOf("😊", "👍", "❤️", "✨", "🙏").forEach { emoji -> Text(emoji, Modifier.clickable { draft += emoji; sheet = "" }.padding(7.dp), fontSize = 24.sp) }
+            } }, confirmButton = { TextButton(onClick = { sheet = "" }) { Text("close", color = Accent) } }
+        )
         }
     }
 }
 
 @Composable private fun Scanlines(modifier: Modifier) {
     Canvas(modifier) {
-        val brush = Brush.horizontalGradient(listOf(Color.Transparent, Color.White.copy(alpha = .013f), Color.White.copy(alpha = .024f), Color.White.copy(alpha = .013f), Color.Transparent))
+        val brush = Brush.horizontalGradient(listOf(Color.Transparent, Color.White.copy(alpha = .020f), Color.White.copy(alpha = .038f), Color.White.copy(alpha = .020f), Color.Transparent))
         var y = 0f
         while (y < size.height) { drawLine(brush, Offset(0f, y), Offset(size.width, y), strokeWidth = .55.dp.toPx()); y += 5.dp.toPx() }
     }
@@ -349,11 +350,11 @@ private fun IntegratedApp() {
 
 @Composable private fun Control(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit, size: Int = 54) {
     Surface(onClick = onClick, modifier = Modifier.size(size.dp).semantics { contentDescription = label }, color = Color(0xFF161616).copy(alpha = .94f), shape = CircleShape, border = BorderStroke(1.dp, Edge)) {
-        Box(contentAlignment = Alignment.Center) { Icon(icon, null, tint = White, modifier = Modifier.size(24.dp)) }
+        Box(contentAlignment = Alignment.Center) { Icon(icon, null, tint = White, modifier = Modifier.size(if (size <= 48) 21.dp else 24.dp)) }
     }
 }
 
-@Composable private fun Mark(name: String, active: Boolean, motion: Boolean, onClick: () -> Unit, size: Int = 62) {
+@Composable private fun Mark(name: String, active: Boolean, motion: Boolean, onClick: () -> Unit, size: Int = 62, connected: Boolean? = null) {
     val transition = rememberInfiniteTransition(label = "pally-mark")
     val pulse by transition.animateFloat(.97f, 1.035f, infiniteRepeatable(tween(1050), RepeatMode.Reverse), label = "pulse")
     Box(Modifier.size(size.dp).clip(CircleShape).clickable(onClick = onClick).background(Color(0xFF0A0A0A)).padding(4.dp), contentAlignment = Alignment.Center) {
@@ -368,36 +369,36 @@ private fun IntegratedApp() {
                 if (name == "Fo by Wajo") Text("by Wajo", color = Muted, fontSize = 8.sp)
             }
         }
+        if (connected != null) Box(Modifier.align(Alignment.BottomEnd).padding(2.dp).size(8.dp).background(if (connected) Accent else Muted.copy(alpha = .7f), CircleShape))
     }
 }
 
 @Composable private fun ChatPage(
     name: String, connected: Boolean, lines: List<Line>, draft: String, onDraft: (String) -> Unit,
     busy: Boolean, searching: Boolean, motion: Boolean, note: String,
-    onMenu: () -> Unit, onChoose: () -> Unit, onVoice: () -> Unit, onAdd: () -> Unit,
-    onEmoji: () -> Unit, onSend: () -> Unit, onReply: (Line) -> Unit, onDismiss: () -> Unit
+    onMenu: () -> Unit, onChoose: () -> Unit, onVoice: () -> Unit, onAdd: () -> Unit, onEmoji: () -> Unit,
+    onSend: () -> Unit, onReply: (Line) -> Unit, onDismiss: () -> Unit
 ) {
     val list = androidx.compose.foundation.lazy.rememberLazyListState()
     LaunchedEffect(lines.size) { if (lines.isNotEmpty()) list.animateScrollToItem(lines.lastIndex) }
     Column(Modifier.fillMaxSize().imePadding()) {
         Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                Control(Icons.Default.Menu, "Open your work", onMenu)
-                Mark(name, busy, motion, onChoose, 64)
-                Control(Icons.Default.Call, "Open voice", onVoice)
+            Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                Control(Icons.Default.Menu, "Open your work", onMenu, 48)
+                Mark(name, busy, motion, onChoose, 58, connected)
+                Control(Icons.Default.Call, "Open voice", onVoice, 48)
             }
-            Text("$name · ${if (connected) "connected" else "not connected"}", Modifier.padding(bottom = 10.dp), color = Muted, fontSize = 13.sp)
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 7.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            androidx.compose.material3.HorizontalDivider(Modifier.weight(1f), color = Edge.copy(alpha = .5f))
+            Text("today", Modifier.padding(horizontal = 14.dp), color = Muted, fontSize = 12.sp)
+            androidx.compose.material3.HorizontalDivider(Modifier.weight(1f), color = Edge.copy(alpha = .5f))
         }
         if (lines.isEmpty()) {
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 Text("your conversation starts here", Modifier.padding(horizontal = 35.dp).offset(y = (-35).dp), color = White, fontSize = 27.sp, lineHeight = 34.sp, textAlign = TextAlign.Center)
             }
         } else {
-            Row(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 5.dp), verticalAlignment = Alignment.CenterVertically) {
-                androidx.compose.material3.HorizontalDivider(Modifier.weight(1f), color = Edge.copy(alpha = .5f))
-                Text("today", Modifier.padding(horizontal = 14.dp), color = Muted, fontSize = 12.sp)
-                androidx.compose.material3.HorizontalDivider(Modifier.weight(1f), color = Edge.copy(alpha = .5f))
-            }
             LazyColumn(state = list, modifier = Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(horizontal = 18.dp, vertical = 15.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 if (lines.any { it.sample }) item { Text("sample preview · not connected", Modifier.fillMaxWidth(), color = Muted.copy(alpha = .75f), fontSize = 10.sp, textAlign = TextAlign.Center) }
                 items(lines, key = { it.id }) { line -> BubbleLine(line, onReply) }
@@ -410,28 +411,41 @@ private fun IntegratedApp() {
                 TextButton(onClick = onDismiss) { Text("ok", color = Accent) }
             }
         }
-        Row(Modifier.fillMaxWidth().padding(horizontal = 15.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Control(Icons.Default.Add, "Add attachment", onAdd, 52)
-            Surface(Modifier.weight(1f).heightIn(min = 54.dp), color = Color(0xFF1C1B1A), shape = RoundedCornerShape(30.dp), border = BorderStroke(1.dp, Edge)) {
-                Row(Modifier.padding(start = 16.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    BasicTextField(draft, onDraft, Modifier.weight(1f).padding(vertical = 14.dp), textStyle = TextStyle(color = White, fontSize = 16.sp, lineHeight = 21.sp), maxLines = 4, decorationBox = { inner -> if (draft.isEmpty()) Text("message $name", color = Muted, fontSize = 15.sp); inner() })
-                    IconButton(onClick = onEmoji) { Icon(Icons.Default.EmojiEmotions, "Choose emoji", tint = White) }
+        Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 7.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Control(Icons.Default.Add, "Add attachment", onAdd, 48)
+            Surface(
+                Modifier.weight(1f).heightIn(min = 48.dp),
+                color = Color(0xFF1D1D1C), shape = RoundedCornerShape(26.dp), border = BorderStroke(1.dp, Edge)
+            ) {
+                Row(Modifier.padding(start = 14.dp, end = 5.dp, top = 3.dp, bottom = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                    BasicTextField(
+                        value = draft, onValueChange = onDraft,
+                        modifier = Modifier.weight(1f).padding(vertical = 10.dp),
+                        textStyle = TextStyle(color = White, fontSize = 16.sp, lineHeight = 21.sp),
+                        maxLines = 4, keyboardOptions = KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Send),
+                        keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSend = { if (draft.isNotBlank()) onSend() }),
+                        decorationBox = { inner ->
+                            if (draft.isEmpty()) Text("message $name", color = Muted, fontSize = 15.sp)
+                            inner()
+                        }
+                    )
+                    Surface(onClick = onEmoji, modifier = Modifier.size(38.dp).semantics { contentDescription = "Choose emoji" }, color = Color.Transparent, shape = CircleShape) { Box(contentAlignment = Alignment.Center) { Text("☺", color = Muted, fontSize = 22.sp, lineHeight = 24.sp) } }
                 }
             }
-            Control(if (draft.isBlank()) Icons.Default.Call else Icons.AutoMirrored.Filled.Send, if (draft.isBlank()) "Open voice" else "Send message", if (draft.isBlank()) onVoice else onSend, 52)
+            Control(if (draft.isBlank()) Icons.Default.Mic else Icons.AutoMirrored.Filled.Send, if (draft.isBlank()) "Open voice" else "Send message", if (draft.isBlank()) onVoice else onSend, 48)
         }
     }
 }
 
 @Composable private fun BubbleLine(line: Line, onReply: (Line) -> Unit) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (line.assistant) Arrangement.Start else Arrangement.End) {
-        Surface(Modifier.widthIn(max = 340.dp).fillMaxWidth(.88f).pointerInput(line.id) { detectTapGestures(onLongPress = { onReply(line) }) }, color = if (line.assistant) Bubble else Color(0xFF111111), shape = RoundedCornerShape(20.dp), border = if (line.assistant) null else BorderStroke(1.dp, Edge)) {
-            Column(Modifier.padding(horizontal = 15.dp, vertical = 12.dp)) {
+        Surface(Modifier.widthIn(max = 306.dp).pointerInput(line.id) { detectTapGestures(onLongPress = { onReply(line) }) }, color = if (line.assistant) Bubble else Color(0xFF111111), shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp, bottomStart = if (line.assistant) 6.dp else 22.dp, bottomEnd = if (line.assistant) 22.dp else 6.dp), border = if (line.assistant) null else BorderStroke(1.dp, Edge)) {
+            Column(Modifier.padding(horizontal = 17.dp, vertical = 14.dp)) {
                 line.quote?.let { Text(it, Modifier.fillMaxWidth().background(Color(0xFF383735), RoundedCornerShape(12.dp)).padding(9.dp), color = Muted, fontSize = 11.sp, maxLines = 2) }
                 Text(line.text, Modifier.padding(top = if (line.quote == null) 0.dp else 7.dp), color = White, fontSize = 16.sp, lineHeight = 23.sp)
                 Row(Modifier.align(Alignment.End).padding(top = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                     if (line.local) Text("local · not sent  ", color = Muted, fontSize = 9.sp)
-                    Text(line.time, color = Muted, fontSize = 10.sp)
+                    Text(line.time, color = Muted, fontSize = 11.sp)
                 }
             }
         }
